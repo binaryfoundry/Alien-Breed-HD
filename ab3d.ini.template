@@ -76,8 +76,8 @@ y_proj_scale=100
 billboard_sprite_rendering_enhancement=1
 
 # 1 = show rounded FPS (same digit font as ammo) at top-left of the letterboxed game area; updates every second.
-# (Alias: fps_counter=1 — same as show_fps=1.)
-show_fps=1
+# (Alias: fps_counter=0 — same as show_fps=0.)
+show_fps=0
 
 # 1 = draw first-person weapon overlay after the 3D world (single-threaded or per strip when render_threads=1).
 weapon_draw=1
