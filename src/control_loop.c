@@ -36,11 +36,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include "logging.h"
-#if defined(__EMSCRIPTEN__)
 #include <SDL.h>
-#endif
 #include "settings.h"
 #define printf ab3d_log_printf
+
+#define LEVEL_TEXT_FADE_STEPS_NATIVE 8
+#define LEVEL_TEXT_FADE_FRAME_MS     20
 
 static void control_game_over_fade_tick(float progress_0_to_1, void *userdata);
 static void control_level_complete_fade_tick(float progress_0_to_1, void *userdata);
@@ -272,6 +273,177 @@ int read_main_menu(GameState *state)
     return 1; /* play game selected */
 }
 
+int play_the_game_should_show_level_text(const GameState *state)
+{
+    return state &&
+           state->mode == MODE_SINGLE &&
+           !state->f9_pending_apply_save &&
+           state->current_level >= 0 &&
+           state->current_level < MAX_LEVELS;
+}
+
+int play_the_game_level_text_fade_steps(void)
+{
+    return LEVEL_TEXT_FADE_STEPS_NATIVE;
+}
+
+int play_the_game_level_text_alpha_for_step(int step)
+{
+    int steps = play_the_game_level_text_fade_steps();
+    if (steps < 1) steps = 1;
+    if (step < 0) step = 0;
+    if (step >= steps) step = steps - 1;
+
+    return ((step + 1) * 255 + steps - 1) / steps;
+}
+
+void play_the_game_present_level_text(GameState *state, int alpha)
+{
+    if (!play_the_game_should_show_level_text(state)) return;
+
+    display_clear_text_screen();
+    int lev = state->current_level;
+    int heading_row = 0;
+    for (int row = 0; row < LEVEL_TEXT_VISIBLE_ROWS; row++) {
+        const char *line = level_text[lev][row];
+        if (line && line[0]) {
+            heading_row = (row > 1) ? row - 2 : 0;
+            break;
+        }
+    }
+    for (int row = 0; row < LEVEL_TEXT_VISIBLE_ROWS; row++) {
+        const char *line = level_text[lev][row];
+        display_draw_line_of_text((line && line[0]) ? line : " ", row);
+    }
+    display_draw_line_of_text(level_text_heading[lev], heading_row);
+    display_present_text_screen_alpha(alpha);
+}
+
+int play_the_game_poll_level_text_input(GameState *state)
+{
+    (void)state;
+
+    SDL_Event ev;
+    while (SDL_PollEvent(&ev)) {
+        switch (ev.type) {
+        case SDL_QUIT:
+            return -1;
+
+        case SDL_KEYDOWN:
+            if (!ev.key.repeat) return 1;
+            break;
+
+        case SDL_MOUSEBUTTONDOWN:
+        case SDL_CONTROLLERBUTTONDOWN:
+        case SDL_JOYBUTTONDOWN:
+        case SDL_FINGERDOWN:
+            return 1;
+
+        case SDL_WINDOWEVENT:
+            switch (ev.window.event) {
+            case SDL_WINDOWEVENT_RESIZED:
+            case SDL_WINDOWEVENT_SIZE_CHANGED:
+                display_handle_resize();
+                break;
+            default:
+                break;
+            }
+            break;
+
+        default:
+            break;
+        }
+    }
+
+    if (SDL_GetMouseState(NULL, NULL) &
+        (SDL_BUTTON(SDL_BUTTON_LEFT) |
+         SDL_BUTTON(SDL_BUTTON_MIDDLE) |
+         SDL_BUTTON(SDL_BUTTON_RIGHT))) {
+        return 1;
+    }
+
+    return 0;
+}
+
+int play_the_game_drain_level_text_input(GameState *state)
+{
+    (void)state;
+
+    SDL_Event ev;
+    while (SDL_PollEvent(&ev)) {
+        switch (ev.type) {
+        case SDL_QUIT:
+            return -1;
+
+        case SDL_WINDOWEVENT:
+            switch (ev.window.event) {
+            case SDL_WINDOWEVENT_RESIZED:
+            case SDL_WINDOWEVENT_SIZE_CHANGED:
+                display_handle_resize();
+                break;
+            default:
+                break;
+            }
+            break;
+
+        default:
+            break;
+        }
+    }
+
+    return 0;
+}
+
+void play_the_game_clear_level_text(GameState *state)
+{
+    if (state) input_clear_keyboard(state->key_map);
+    display_clear_text_screen();
+}
+
+#if !defined(__EMSCRIPTEN__)
+static void control_level_text_fade_in(GameState *state)
+{
+    int steps = play_the_game_level_text_fade_steps();
+    for (int step = 0; step < steps; step++) {
+        play_the_game_present_level_text(state,
+            play_the_game_level_text_alpha_for_step(step));
+        SDL_Delay(LEVEL_TEXT_FADE_FRAME_MS);
+    }
+}
+
+static int control_level_text_wait_and_fade_out(GameState *state)
+{
+    if (play_the_game_drain_level_text_input(state) < 0) {
+        state->running = false;
+        state->finished_level = 0;
+        return 0;
+    }
+
+    for (;;) {
+        play_the_game_present_level_text(state, 255);
+        int input = play_the_game_poll_level_text_input(state);
+        if (input < 0) {
+            state->running = false;
+            state->finished_level = 0;
+            return 0;
+        }
+        if (input > 0) {
+            break;
+        }
+        SDL_Delay(16);
+    }
+
+    for (int step = play_the_game_level_text_fade_steps() - 1; step >= 0; step--) {
+        play_the_game_present_level_text(state,
+            play_the_game_level_text_alpha_for_step(step));
+        SDL_Delay(LEVEL_TEXT_FADE_FRAME_MS);
+    }
+    play_the_game_clear_level_text(state);
+    display_present_text_screen_alpha(0);
+    return 1;
+}
+#endif
+
 /*
  * play_the_game - Runs a single level from start to death/completion
  *
@@ -297,8 +469,8 @@ void play_the_game_prepare_level(GameState *state, bool *copper_screen_ready)
 
     printf("[GAME] === PlayTheGame: level %d ===\n", state->current_level);
 
-    /* ---- Text screen ---- */
-    display_clear_text_screen();
+    /* Level intro text is prepared/faded by caller, matching AB3DI.s
+     * DrawLevelText before level load. */
 
     if (!*copper_screen_ready) {
         display_alloc_copper_screen();
@@ -488,7 +660,14 @@ void play_the_game(GameState *state)
     bool copper_screen_ready = false;
 
     for (;;) {
+        int show_level_text = play_the_game_should_show_level_text(state);
+        if (show_level_text) {
+            control_level_text_fade_in(state);
+        }
         play_the_game_prepare_level(state, &copper_screen_ready);
+        if (show_level_text && !control_level_text_wait_and_fade_out(state)) {
+            break;
+        }
         game_loop(state);
         if (play_the_game_after_game_loop(state)) continue;
         break;

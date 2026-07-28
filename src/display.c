@@ -173,7 +173,14 @@ static void         display_hud_digits_ensure_loaded(void);
 #define DISPLAY_ASCII_COLS            16
 #define DISPLAY_ASCII_CELL_W          12
 #define DISPLAY_ASCII_CELL_H          17
-#define DISPLAY_ASCII_XADVANCE        12
+#define DISPLAY_ASCII_DRAW_X          2
+#define DISPLAY_ASCII_DRAW_Y          2
+#define DISPLAY_ASCII_DRAW_W          8
+#define DISPLAY_ASCII_DRAW_H          13
+#define DISPLAY_ASCII_XADVANCE        8
+#define DISPLAY_ASCII_LINE_ADVANCE    14
+#define DISPLAY_ASCII_SCALE_ONE       256
+#define DISPLAY_TEXT_WRAP_MAX_RUNS    1024
 #define DISPLAY_TEXT_MAX_LINES        32
 #define DISPLAY_TEXT_MAX_CHARS        128
 static SDL_Texture *g_ascii_font_tex;
@@ -183,7 +190,7 @@ static int          g_ascii_font_load_attempted;
 static char         g_text_lines[DISPLAY_TEXT_MAX_LINES][DISPLAY_TEXT_MAX_CHARS];
 static uint8_t      g_text_line_used[DISPLAY_TEXT_MAX_LINES];
 static void         display_ascii_font_free(void);
-static void         display_text_screen_draw(int text_only);
+static void         display_text_screen_draw(Uint8 alpha);
 
 static int g_gl_unpack_ok; /* OpenGL R16UI + shader path active */
 static int g_present_width = 0;
@@ -1354,38 +1361,61 @@ static void display_ascii_font_ensure_loaded(void)
     }
 }
 
+typedef struct DisplayTextRun {
+    const char *text;
+    int start;
+    int len;
+} DisplayTextRun;
+
+static int display_ascii_text_is_blank(const char *text)
+{
+    if (!text) return 1;
+    while (*text) {
+        if (*text != ' ' && *text != '\t')
+            return 0;
+        text++;
+    }
+    return 1;
+}
+
 static int display_text_has_lines(void)
 {
     for (int i = 0; i < DISPLAY_TEXT_MAX_LINES; i++) {
-        if (g_text_line_used[i] && g_text_lines[i][0])
+        if (g_text_line_used[i] && !display_ascii_text_is_blank(g_text_lines[i]))
             return 1;
     }
     return 0;
 }
 
-static int display_bitmap_text_width_px(const char *text, int scale)
+static int display_text_scaled_px(int px, int scale_q)
 {
-    int count = 0;
-    if (!text || scale < 1) return 0;
-    while (*text) {
-        count++;
-        text++;
-    }
-    return count * DISPLAY_ASCII_XADVANCE * scale;
+    int scaled = (px * scale_q + DISPLAY_ASCII_SCALE_ONE / 2) / DISPLAY_ASCII_SCALE_ONE;
+    return (scaled > 0) ? scaled : 1;
 }
 
-static void display_bitmap_text_abs(const char *text, int x, int y, int scale, Uint8 alpha)
+static int display_text_span_width_px_q(int len, int scale_q)
 {
-    if (!text || !*text || scale < 1) return;
+    if (len < 1 || scale_q < 1) return 0;
+    return len * display_text_scaled_px(DISPLAY_ASCII_XADVANCE, scale_q);
+}
+
+static void display_bitmap_text_span_abs(const char *text, int start, int len,
+                                         int x, int y, int scale_q, Uint8 alpha)
+{
+    if (!text || len < 1 || scale_q < 1) return;
     display_ascii_font_ensure_loaded();
     if (!g_ascii_font_tex) return;
 
     SDL_SetTextureColorMod(g_ascii_font_tex, 255, 255, 255);
     SDL_SetTextureAlphaMod(g_ascii_font_tex, alpha);
 
+    int draw_w = display_text_scaled_px(DISPLAY_ASCII_DRAW_W, scale_q);
+    int draw_h = display_text_scaled_px(DISPLAY_ASCII_DRAW_H, scale_q);
+    int advance = display_text_scaled_px(DISPLAY_ASCII_XADVANCE, scale_q);
+
     int pen_x = x;
-    while (*text) {
-        unsigned char ch = (unsigned char)*text++;
+    for (int i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)text[start + i];
         if (ch < DISPLAY_ASCII_FIRST || ch > DISPLAY_ASCII_LAST)
             ch = (unsigned char)'?';
 
@@ -1395,51 +1425,137 @@ static void display_bitmap_text_abs(const char *text, int x, int y, int scale, U
             int row = idx / DISPLAY_ASCII_COLS;
             SDL_Rect src;
             SDL_Rect dst;
-            src.x = col * DISPLAY_ASCII_CELL_W;
-            src.y = row * DISPLAY_ASCII_CELL_H;
-            src.w = DISPLAY_ASCII_CELL_W;
-            src.h = DISPLAY_ASCII_CELL_H;
+            src.x = col * DISPLAY_ASCII_CELL_W + DISPLAY_ASCII_DRAW_X;
+            src.y = row * DISPLAY_ASCII_CELL_H + DISPLAY_ASCII_DRAW_Y;
+            src.w = DISPLAY_ASCII_DRAW_W;
+            src.h = DISPLAY_ASCII_DRAW_H;
             dst.x = pen_x;
             dst.y = y;
-            dst.w = DISPLAY_ASCII_CELL_W * scale;
-            dst.h = DISPLAY_ASCII_CELL_H * scale;
+            dst.w = draw_w;
+            dst.h = draw_h;
             display_overlay_copy(g_ascii_font_tex, &src, &dst);
         }
 
-        pen_x += DISPLAY_ASCII_XADVANCE * scale;
+        pen_x += advance;
     }
 }
 
-static void display_text_screen_draw_panel(const SDL_Rect *r)
+static int display_text_margin_for_extent(int extent)
 {
-    if (!r || r->w < 16 || r->h < 16) return;
-
-    SDL_Rect panel;
-    panel.w = (r->w * 3) / 5;
-    panel.h = (r->h * 2) / 3;
-    if (panel.w < 280) panel.w = (r->w > 320) ? 280 : r->w - 24;
-    if (panel.h < 220) panel.h = (r->h > 260) ? 220 : r->h - 24;
-    if (panel.w > r->w - 24) panel.w = r->w - 24;
-    if (panel.h > r->h - 24) panel.h = r->h - 24;
-    panel.x = r->x + (r->w - panel.w) / 2;
-    panel.y = r->y + (r->h - panel.h) / 2;
-    if (panel.w < 1 || panel.h < 1) return;
-
-    display_overlay_fill_rect_abs(&panel, 0, 12, 8, 220);
-
-    SDL_Rect edge = panel;
-    edge.h = 2;
-    display_overlay_fill_rect_abs(&edge, 0, 180, 90, 210);
-    edge.y = panel.y + panel.h - 2;
-    display_overlay_fill_rect_abs(&edge, 0, 80, 40, 210);
-    edge = panel;
-    edge.w = 2;
-    display_overlay_fill_rect_abs(&edge, 0, 130, 65, 210);
-    edge.x = panel.x + panel.w - 2;
-    display_overlay_fill_rect_abs(&edge, 0, 130, 65, 210);
+    int margin = extent / 24;
+    if (margin < 8) margin = 8;
+    if (margin > 64) margin = 64;
+    if (extent < margin * 2 + 1) margin = (extent > 2) ? extent / 8 : 0;
+    return margin;
 }
 
-static void display_text_screen_draw(int text_only)
+static void display_text_trim_span(const char *text, int *start, int *len)
+{
+    int s = 0;
+    int e = text ? (int)strlen(text) : 0;
+    while (s < e && (text[s] == ' ' || text[s] == '\t')) s++;
+    while (e > s && (text[e - 1] == ' ' || text[e - 1] == '\t')) e--;
+    *start = s;
+    *len = e - s;
+}
+
+static int display_text_append_run(DisplayTextRun *runs, int max_runs,
+                                   int *count, const char *text, int start, int len)
+{
+    if (*count >= max_runs) return 0;
+    runs[*count].text = text;
+    runs[*count].start = start;
+    runs[*count].len = len;
+    (*count)++;
+    return 1;
+}
+
+static int display_text_append_wrapped(DisplayTextRun *runs, int max_runs,
+                                       int *count, const char *text, int max_cols)
+{
+    int start = 0;
+    int len = 0;
+    display_text_trim_span(text, &start, &len);
+    if (len < 1) {
+        return display_text_append_run(runs, max_runs, count, text, 0, 0);
+    }
+
+    if (max_cols < 8) max_cols = 8;
+
+    int pos = start;
+    int end = start + len;
+    while (pos < end) {
+        while (pos < end && (text[pos] == ' ' || text[pos] == '\t')) pos++;
+        if (pos >= end) break;
+
+        int run_end = end;
+        if (run_end - pos > max_cols) {
+            int limit = pos + max_cols;
+            int break_at = -1;
+            for (int j = limit; j > pos; j--) {
+                if (text[j] == ' ' || text[j] == '\t') {
+                    break_at = j;
+                    break;
+                }
+            }
+            run_end = (break_at > pos) ? break_at : limit;
+        }
+
+        int run_len = run_end - pos;
+        while (run_len > 0 &&
+               (text[pos + run_len - 1] == ' ' || text[pos + run_len - 1] == '\t')) {
+            run_len--;
+        }
+        if (run_len > 0 &&
+            !display_text_append_run(runs, max_runs, count, text, pos, run_len)) {
+            return 0;
+        }
+
+        pos = run_end;
+    }
+
+    return 1;
+}
+
+static int display_text_build_wrapped_layout(DisplayTextRun *runs, int max_runs,
+                                             int max_cols, int collapse_blank_rows,
+                                             int *out_longest_chars)
+{
+    int first_line = -1;
+    int last_line = -1;
+    for (int i = 0; i < DISPLAY_TEXT_MAX_LINES; i++) {
+        if (g_text_line_used[i] && !display_ascii_text_is_blank(g_text_lines[i])) {
+            if (first_line < 0) first_line = i;
+            last_line = i;
+        }
+    }
+    if (first_line < 0 || last_line < first_line) return 0;
+
+    int count = 0;
+    int longest = 1;
+    for (int i = first_line; i <= last_line; i++) {
+        if (!g_text_line_used[i] || display_ascii_text_is_blank(g_text_lines[i])) {
+            if (!collapse_blank_rows &&
+                !display_text_append_run(runs, max_runs, &count, g_text_lines[i], 0, 0)) {
+                return 0;
+            }
+            continue;
+        }
+
+        int before = count;
+        if (!display_text_append_wrapped(runs, max_runs, &count, g_text_lines[i], max_cols)) {
+            return 0;
+        }
+        for (int j = before; j < count; j++) {
+            if (runs[j].len > longest) longest = runs[j].len;
+        }
+    }
+
+    if (out_longest_chars) *out_longest_chars = longest;
+    return count;
+}
+
+static void display_text_screen_draw(Uint8 alpha)
 {
     if (!display_text_has_lines()) return;
 
@@ -1451,32 +1567,93 @@ static void display_text_screen_draw(int text_only)
         r.h = (g_present_height > 0) ? g_present_height : 480;
     }
 
-    if (text_only)
-        display_text_screen_draw_panel(&r);
+    int margin_x = display_text_margin_for_extent(r.w);
+    int margin_y = display_text_margin_for_extent(r.h);
+    int avail_w = r.w - margin_x * 2;
+    int avail_h = r.h - margin_y * 2;
+    if (avail_w < DISPLAY_ASCII_XADVANCE) {
+        avail_w = r.w;
+        margin_x = 0;
+    }
+    if (avail_h < DISPLAY_ASCII_LINE_ADVANCE) {
+        avail_h = r.h;
+        margin_y = 0;
+    }
 
-    int scale = r.h / 260;
-    if (scale < 1) scale = 1;
-    if (r.h >= 300 && scale < 2) scale = 2;
-    if (scale > 5) scale = 5;
+    DisplayTextRun runs[DISPLAY_TEXT_WRAP_MAX_RUNS];
+    int run_count = 0;
+    int scale_q = DISPLAY_ASCII_SCALE_ONE;
+    static const int text_scale_candidates_q[] = {
+        DISPLAY_ASCII_SCALE_ONE * 4,
+        DISPLAY_ASCII_SCALE_ONE * 3,
+        DISPLAY_ASCII_SCALE_ONE * 2,
+        DISPLAY_ASCII_SCALE_ONE * 3 / 2,
+        DISPLAY_ASCII_SCALE_ONE * 5 / 4,
+        DISPLAY_ASCII_SCALE_ONE,
+        DISPLAY_ASCII_SCALE_ONE * 7 / 8,
+        DISPLAY_ASCII_SCALE_ONE * 3 / 4,
+        DISPLAY_ASCII_SCALE_ONE * 5 / 8,
+        DISPLAY_ASCII_SCALE_ONE / 2,
+        DISPLAY_ASCII_SCALE_ONE * 3 / 8,
+        DISPLAY_ASCII_SCALE_ONE / 4
+    };
 
-    int line_h = (DISPLAY_ASCII_CELL_H + 4) * scale;
-    int top = text_only ? (r.y + r.h / 8) : (r.y + r.h / 24);
-    int margin = r.w / 24;
-    if (margin < 8) margin = 8;
+    for (int collapse_blanks = 0; collapse_blanks <= 1 && run_count == 0; collapse_blanks++) {
+        int num_candidates = (int)(sizeof(text_scale_candidates_q) /
+                                   sizeof(text_scale_candidates_q[0]));
+        for (int c = 0; c < num_candidates; c++) {
+            int candidate_q = text_scale_candidates_q[c];
+            int xadvance = display_text_scaled_px(DISPLAY_ASCII_XADVANCE, candidate_q);
+            int line_h = display_text_scaled_px(DISPLAY_ASCII_LINE_ADVANCE, candidate_q);
+            int max_cols = avail_w / xadvance;
+            if (max_cols < 8) max_cols = 8;
+            int candidate_longest = 1;
+            DisplayTextRun candidate_runs[DISPLAY_TEXT_WRAP_MAX_RUNS];
+            int candidate_count = display_text_build_wrapped_layout(
+                candidate_runs, DISPLAY_TEXT_WRAP_MAX_RUNS, max_cols,
+                collapse_blanks, &candidate_longest);
+            if (candidate_count < 1) continue;
 
-    for (int i = 0; i < DISPLAY_TEXT_MAX_LINES; i++) {
-        if (!g_text_line_used[i] || !g_text_lines[i][0]) continue;
-
-        int line_scale = scale;
-        int text_w = display_bitmap_text_width_px(g_text_lines[i], line_scale);
-        while (line_scale > 1 && text_w > r.w - margin * 2) {
-            line_scale--;
-            text_w = display_bitmap_text_width_px(g_text_lines[i], line_scale);
+            int total_h = candidate_count * line_h;
+            int total_w = display_text_span_width_px_q(candidate_longest, candidate_q);
+            if (total_h <= avail_h && total_w <= avail_w) {
+                memcpy(runs, candidate_runs,
+                       (size_t)candidate_count * sizeof(candidate_runs[0]));
+                run_count = candidate_count;
+                scale_q = candidate_q;
+                break;
+            }
         }
+    }
+
+    if (run_count < 1) {
+        int fallback_scale_q = DISPLAY_ASCII_SCALE_ONE / 4;
+        int max_cols = avail_w / display_text_scaled_px(DISPLAY_ASCII_XADVANCE,
+                                                        fallback_scale_q);
+        if (max_cols < 8) max_cols = 8;
+        int fallback_longest = 1;
+        run_count = display_text_build_wrapped_layout(
+            runs, DISPLAY_TEXT_WRAP_MAX_RUNS, max_cols, 1, &fallback_longest);
+        scale_q = fallback_scale_q;
+        if (run_count < 1) return;
+    }
+
+    int line_h = display_text_scaled_px(DISPLAY_ASCII_LINE_ADVANCE, scale_q);
+    int draw_h = display_text_scaled_px(DISPLAY_ASCII_DRAW_H, scale_q);
+    int total_h = run_count * line_h;
+    int top = r.y + (r.h - total_h) / 2;
+    if (top < r.y + margin_y) top = r.y + margin_y;
+
+    for (int i = 0; i < run_count; i++) {
+        if (runs[i].len < 1) continue;
+
+        int text_w = display_text_span_width_px_q(runs[i].len, scale_q);
         int x = r.x + (r.w - text_w) / 2;
+        if (x < r.x + margin_x) x = r.x + margin_x;
         int y = top + i * line_h;
-        if (y > r.y + r.h - DISPLAY_ASCII_CELL_H * line_scale) continue;
-        display_bitmap_text_abs(g_text_lines[i], x, y, line_scale, 255);
+        if (y > r.y + r.h - margin_y - draw_h) continue;
+        display_bitmap_text_span_abs(runs[i].text, runs[i].start, runs[i].len,
+                                     x, y, scale_q, alpha);
     }
 }
 
@@ -3302,7 +3479,7 @@ static void display_present_cw_frame(GameState *state)
             display_automap_sdl_overlay(state);
         display_fps_overlay(state);
     }
-    display_text_screen_draw(0);
+    display_text_screen_draw(255);
 
     if (g_screen_tint_enabled && g_screen_tint_a > 0) {
         if (g_gl_unpack_ok && g_gl_hud_ok) {
@@ -3357,7 +3534,14 @@ void display_present_last_frame(GameState *state)
 
 void display_present_text_screen(void)
 {
+    display_present_text_screen_alpha(255);
+}
+
+void display_present_text_screen_alpha(int alpha)
+{
     if (!g_sdl_ren) return;
+    if (alpha < 0) alpha = 0;
+    if (alpha > 255) alpha = 255;
 
     int out_w = 0;
     int out_h = 0;
@@ -3379,13 +3563,13 @@ void display_present_text_screen(void)
         g_gl_clear_color(0.0f, 0.0f, 0.0f, 1.0f);
         g_gl_clear(GL_COLOR_BUFFER_BIT);
         display_gl_overlay_begin();
-        display_text_screen_draw(1);
+        display_text_screen_draw((Uint8)alpha);
         display_gl_overlay_end();
     } else {
         SDL_SetRenderDrawBlendMode(g_sdl_ren, SDL_BLENDMODE_BLEND);
         SDL_SetRenderDrawColor(g_sdl_ren, 0, 0, 0, 255);
         SDL_RenderClear(g_sdl_ren);
-        display_text_screen_draw(1);
+        display_text_screen_draw((Uint8)alpha);
     }
 
     SDL_RenderPresent(g_sdl_ren);

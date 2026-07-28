@@ -255,7 +255,10 @@ extern const int16_t end_zones[16];
  * Level text / blurb
  * Translated from LevelBlurb.s
  * ----------------------------------------------------------------------- */
-extern const char *level_text[16];
+#define LEVEL_TEXT_ROWS 16
+#define LEVEL_TEXT_VISIBLE_ROWS 15
+extern const char *level_text_heading[16];
+extern const char *level_text[16][LEVEL_TEXT_ROWS];
 extern const char *end_game_text;
 
 /* Conditions bitmask for switches/doors */
