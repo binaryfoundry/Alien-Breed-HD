@@ -3472,13 +3472,14 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
     int32_t dir_x = sin_val;
     int32_t dir_z = cos_val;
 
-    /* 5. Auto-aim system. AB3D I PlayerShoot.s scans CalcPLR*InLine targets
-     * and solves bulyspd from targetydiff. Mouse-look mode still needs a
-     * target-under-crosshair test for instant weapons, but it must not derive
-     * vertical aim from that target. */
-    bool auto_aim_enabled = !state->cfg_mouse_look;
-    bool manual_hitscan_aim = state->cfg_mouse_look && gun->fire_bullet != 0;
-    bool target_scan_enabled = auto_aim_enabled || manual_hitscan_aim;
+    /* 5. Target selection and fixed-view auto-aim. AB3D I PlayerShoot.s scans
+     * CalcPLR*InLine targets and solves bulyspd from targetydiff. Mouse-look
+     * mode disables that target-derived vertical aim; instant weapons still scan
+     * along the reticle so they can hit objects and keep the barrel priority
+     * from the original target selection. */
+    bool fixed_view_auto_aim = !state->cfg_mouse_look;
+    bool mouse_look_instant_targeting = state->cfg_mouse_look && gun->fire_bullet != 0;
+    bool target_scan_enabled = fixed_view_auto_aim || mouse_look_instant_targeting;
     int16_t bulyspd = 0; /* bullet Y velocity for vertical auto-aim */
 
     int8_t *obs_in_line = (plr_num == 1) ? plr1_obs_in_line : plr2_obs_in_line;
@@ -3553,7 +3554,7 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
             int16_t obj_y = obj_w(obj->raw + 4);
             int32_t ydiff = ((int32_t)obj_y << 7) - plr->yoff;
             int32_t abs_ydiff = (ydiff < 0) ? -ydiff : ydiff;
-            if (manual_hitscan_aim) {
+            if (mouse_look_instant_targeting) {
                 if (!player_mouse_look_target_in_vertical_aim(state, plr, plr_num,
                                                               obj_type, ydiff, dist))
                     continue;
@@ -3573,7 +3574,7 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
                     los_target_z = obj_w(pt + 4);
                     have_los_target_point = true;
                 }
-                if (manual_hitscan_aim) {
+                if (mouse_look_instant_targeting) {
                     los_target_x = player_mouse_look_ray_axis_at_dist(hitscan_viewer_x, sin_val, dist);
                     los_target_z = player_mouse_look_ray_axis_at_dist(hitscan_viewer_z, cos_val, dist);
                     los_target_y = player_clamp_i16(
@@ -3654,7 +3655,7 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
     has_target = (closest_idx >= 0 && closest_dist > 0 && state->level.object_data);
     /* Calculate vertical aim toward target (PlayerShoot.s lines 99-139). */
     {
-        if (auto_aim_enabled && has_target) {
+        if (fixed_view_auto_aim && has_target) {
             int32_t target_ydiff = closest_target_ydiff;
             int32_t aim_dist = closest_dist;
 
