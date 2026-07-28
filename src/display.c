@@ -165,6 +165,26 @@ static int          g_hud_digit_tex_h[2];
 static int          g_hud_digits_load_attempted;
 static void         display_hud_digits_free(void);
 static void         display_hud_digits_ensure_loaded(void);
+
+/* Printable ASCII bitmap font from fonts/ascii_font/ascii_font_green_black_metadata_v2.json. */
+#define DISPLAY_ASCII_FONT_PATH       "fonts/ascii_font/ascii_font_green_black_atlas_v2.png"
+#define DISPLAY_ASCII_FIRST           32
+#define DISPLAY_ASCII_LAST            126
+#define DISPLAY_ASCII_COLS            16
+#define DISPLAY_ASCII_CELL_W          12
+#define DISPLAY_ASCII_CELL_H          17
+#define DISPLAY_ASCII_XADVANCE        12
+#define DISPLAY_TEXT_MAX_LINES        32
+#define DISPLAY_TEXT_MAX_CHARS        128
+static SDL_Texture *g_ascii_font_tex;
+static int          g_ascii_font_tex_w;
+static int          g_ascii_font_tex_h;
+static int          g_ascii_font_load_attempted;
+static char         g_text_lines[DISPLAY_TEXT_MAX_LINES][DISPLAY_TEXT_MAX_CHARS];
+static uint8_t      g_text_line_used[DISPLAY_TEXT_MAX_LINES];
+static void         display_ascii_font_free(void);
+static void         display_text_screen_draw(int text_only);
+
 static int g_gl_unpack_ok; /* OpenGL R16UI + shader path active */
 static int g_present_width = 0;
 static int g_present_height = 0;
@@ -438,6 +458,7 @@ static DisplayGlGetProgramInfoLogFn       g_gl_get_program_info_log;
 static inline size_t display_cw_index_xy(int x, int y, int w, int h)
 {
 #if AB3D_CW_COL_MAJOR
+    (void)w;
     return (size_t)x * (size_t)h + (size_t)y;
 #else
     (void)h;
@@ -1233,6 +1254,229 @@ static void display_overlay_fill_rect_abs(const SDL_Rect *rect, Uint8 r, Uint8 g
         SDL_SetRenderDrawBlendMode(g_sdl_ren, SDL_BLENDMODE_BLEND);
         SDL_SetRenderDrawColor(g_sdl_ren, r, g, b, a);
         SDL_RenderFillRect(g_sdl_ren, rect);
+    }
+}
+
+static SDL_Texture *display_load_png_texture_argb(const char *rel_path, int *out_w, int *out_h,
+                                                  const char *label)
+{
+    char *base;
+    char path[1024];
+    int w = 0, h = 0, comp = 0;
+    unsigned char *rgba = NULL;
+
+    if (!g_sdl_ren || !rel_path || !*rel_path) return NULL;
+
+    base = SDL_GetBasePath();
+    if (base) {
+        int plen = snprintf(path, sizeof(path), "%s%s", base, rel_path);
+        if (plen > 0 && plen < (int)sizeof(path))
+            rgba = stbi_load(path, &w, &h, &comp, 4);
+        SDL_free(base);
+    }
+    if (!rgba) {
+        int plen = snprintf(path, sizeof(path), "%s", rel_path);
+        if (plen > 0 && plen < (int)sizeof(path))
+            rgba = stbi_load(path, &w, &h, &comp, 4);
+    }
+    if (!rgba) {
+        printf("[DISPLAY] %s: could not load %s (%s)\n",
+               label ? label : "PNG",
+               rel_path,
+               stbi_failure_reason() ? stbi_failure_reason() : "?");
+        return NULL;
+    }
+    if (w < 1 || h < 1) {
+        stbi_image_free(rgba);
+        return NULL;
+    }
+
+    size_t npix = (size_t)w * (size_t)h;
+    uint32_t *argb = (uint32_t *)malloc(npix * sizeof(uint32_t));
+    if (!argb) {
+        stbi_image_free(rgba);
+        return NULL;
+    }
+    for (size_t p = 0; p < npix; p++) {
+        unsigned char r = rgba[p * 4 + 0];
+        unsigned char g = rgba[p * 4 + 1];
+        unsigned char b = rgba[p * 4 + 2];
+        unsigned char a = rgba[p * 4 + 3];
+        argb[p] = ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+    }
+    stbi_image_free(rgba);
+
+    SDL_Texture *t = SDL_CreateTexture(g_sdl_ren, SDL_PIXELFORMAT_ARGB8888,
+                                       SDL_TEXTUREACCESS_STATIC, w, h);
+    if (!t || SDL_UpdateTexture(t, NULL, argb, (int)(w * (int)sizeof(uint32_t))) != 0) {
+        if (t) SDL_DestroyTexture(t);
+        free(argb);
+        printf("[DISPLAY] %s: SDL texture failed for %s\n",
+               label ? label : "PNG", rel_path);
+        return NULL;
+    }
+    free(argb);
+
+    SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+    SDL_SetTextureScaleMode(t, SDL_ScaleModeNearest);
+#endif
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
+    return t;
+}
+
+static void display_ascii_font_free(void)
+{
+    if (g_ascii_font_tex) {
+        SDL_DestroyTexture(g_ascii_font_tex);
+        g_ascii_font_tex = NULL;
+    }
+    g_ascii_font_tex_w = 0;
+    g_ascii_font_tex_h = 0;
+    g_ascii_font_load_attempted = 0;
+}
+
+static void display_ascii_font_ensure_loaded(void)
+{
+    if (g_ascii_font_load_attempted || !g_sdl_ren) return;
+    g_ascii_font_load_attempted = 1;
+
+    g_ascii_font_tex = display_load_png_texture_argb(DISPLAY_ASCII_FONT_PATH,
+                                                     &g_ascii_font_tex_w,
+                                                     &g_ascii_font_tex_h,
+                                                     "ASCII font");
+    if (g_ascii_font_tex &&
+        (g_ascii_font_tex_w != DISPLAY_ASCII_COLS * DISPLAY_ASCII_CELL_W ||
+         g_ascii_font_tex_h < DISPLAY_ASCII_CELL_H)) {
+        printf("[DISPLAY] ASCII font: unexpected atlas size %dx%d for %s\n",
+               g_ascii_font_tex_w, g_ascii_font_tex_h, DISPLAY_ASCII_FONT_PATH);
+    }
+}
+
+static int display_text_has_lines(void)
+{
+    for (int i = 0; i < DISPLAY_TEXT_MAX_LINES; i++) {
+        if (g_text_line_used[i] && g_text_lines[i][0])
+            return 1;
+    }
+    return 0;
+}
+
+static int display_bitmap_text_width_px(const char *text, int scale)
+{
+    int count = 0;
+    if (!text || scale < 1) return 0;
+    while (*text) {
+        count++;
+        text++;
+    }
+    return count * DISPLAY_ASCII_XADVANCE * scale;
+}
+
+static void display_bitmap_text_abs(const char *text, int x, int y, int scale, Uint8 alpha)
+{
+    if (!text || !*text || scale < 1) return;
+    display_ascii_font_ensure_loaded();
+    if (!g_ascii_font_tex) return;
+
+    SDL_SetTextureColorMod(g_ascii_font_tex, 255, 255, 255);
+    SDL_SetTextureAlphaMod(g_ascii_font_tex, alpha);
+
+    int pen_x = x;
+    while (*text) {
+        unsigned char ch = (unsigned char)*text++;
+        if (ch < DISPLAY_ASCII_FIRST || ch > DISPLAY_ASCII_LAST)
+            ch = (unsigned char)'?';
+
+        if (ch != (unsigned char)' ') {
+            int idx = (int)ch - DISPLAY_ASCII_FIRST;
+            int col = idx % DISPLAY_ASCII_COLS;
+            int row = idx / DISPLAY_ASCII_COLS;
+            SDL_Rect src;
+            SDL_Rect dst;
+            src.x = col * DISPLAY_ASCII_CELL_W;
+            src.y = row * DISPLAY_ASCII_CELL_H;
+            src.w = DISPLAY_ASCII_CELL_W;
+            src.h = DISPLAY_ASCII_CELL_H;
+            dst.x = pen_x;
+            dst.y = y;
+            dst.w = DISPLAY_ASCII_CELL_W * scale;
+            dst.h = DISPLAY_ASCII_CELL_H * scale;
+            display_overlay_copy(g_ascii_font_tex, &src, &dst);
+        }
+
+        pen_x += DISPLAY_ASCII_XADVANCE * scale;
+    }
+}
+
+static void display_text_screen_draw_panel(const SDL_Rect *r)
+{
+    if (!r || r->w < 16 || r->h < 16) return;
+
+    SDL_Rect panel;
+    panel.w = (r->w * 3) / 5;
+    panel.h = (r->h * 2) / 3;
+    if (panel.w < 280) panel.w = (r->w > 320) ? 280 : r->w - 24;
+    if (panel.h < 220) panel.h = (r->h > 260) ? 220 : r->h - 24;
+    if (panel.w > r->w - 24) panel.w = r->w - 24;
+    if (panel.h > r->h - 24) panel.h = r->h - 24;
+    panel.x = r->x + (r->w - panel.w) / 2;
+    panel.y = r->y + (r->h - panel.h) / 2;
+    if (panel.w < 1 || panel.h < 1) return;
+
+    display_overlay_fill_rect_abs(&panel, 0, 12, 8, 220);
+
+    SDL_Rect edge = panel;
+    edge.h = 2;
+    display_overlay_fill_rect_abs(&edge, 0, 180, 90, 210);
+    edge.y = panel.y + panel.h - 2;
+    display_overlay_fill_rect_abs(&edge, 0, 80, 40, 210);
+    edge = panel;
+    edge.w = 2;
+    display_overlay_fill_rect_abs(&edge, 0, 130, 65, 210);
+    edge.x = panel.x + panel.w - 2;
+    display_overlay_fill_rect_abs(&edge, 0, 130, 65, 210);
+}
+
+static void display_text_screen_draw(int text_only)
+{
+    if (!display_text_has_lines()) return;
+
+    SDL_Rect r = g_present_dst_rect;
+    if (r.w < 1 || r.h < 1) {
+        r.x = 0;
+        r.y = 0;
+        r.w = (g_present_width > 0) ? g_present_width : 640;
+        r.h = (g_present_height > 0) ? g_present_height : 480;
+    }
+
+    if (text_only)
+        display_text_screen_draw_panel(&r);
+
+    int scale = r.h / 260;
+    if (scale < 1) scale = 1;
+    if (r.h >= 300 && scale < 2) scale = 2;
+    if (scale > 5) scale = 5;
+
+    int line_h = (DISPLAY_ASCII_CELL_H + 4) * scale;
+    int top = text_only ? (r.y + r.h / 8) : (r.y + r.h / 24);
+    int margin = r.w / 24;
+    if (margin < 8) margin = 8;
+
+    for (int i = 0; i < DISPLAY_TEXT_MAX_LINES; i++) {
+        if (!g_text_line_used[i] || !g_text_lines[i][0]) continue;
+
+        int line_scale = scale;
+        int text_w = display_bitmap_text_width_px(g_text_lines[i], line_scale);
+        while (line_scale > 1 && text_w > r.w - margin * 2) {
+            line_scale--;
+            text_w = display_bitmap_text_width_px(g_text_lines[i], line_scale);
+        }
+        int x = r.x + (r.w - text_w) / 2;
+        int y = top + i * line_h;
+        if (y > r.y + r.h - DISPLAY_ASCII_CELL_H * line_scale) continue;
+        display_bitmap_text_abs(g_text_lines[i], x, y, line_scale, 255);
     }
 }
 
@@ -2032,6 +2276,7 @@ void display_shutdown(void)
 {
     display_hud_digits_free();
     display_key_hud_free_textures();
+    display_ascii_font_free();
     display_gl_lines_release_scratch();
     g_key_hud_tex_tag = 0;
     renderer_shutdown();
@@ -2046,8 +2291,8 @@ void display_shutdown(void)
 /* -----------------------------------------------------------------------
  * Screen management (no-ops for SDL2)
  * ----------------------------------------------------------------------- */
-void display_alloc_text_screen(void)        { }
-void display_release_text_screen(void)      { }
+void display_alloc_text_screen(void)        { display_clear_text_screen(); }
+void display_release_text_screen(void)      { display_clear_text_screen(); display_ascii_font_free(); }
 void display_alloc_copper_screen(void)      { }
 void display_release_copper_screen(void)    { }
 void display_alloc_title_memory(void)       { }
@@ -2057,7 +2302,7 @@ void display_release_panel_memory(void)     { }
 
 void display_setup_title_screen(void)       { }
 void display_load_title_screen(void)        { }
-void display_clear_opt_screen(void)         { }
+void display_clear_opt_screen(void)         { display_clear_text_screen(); }
 void display_draw_opt_screen(int screen_num) { (void)screen_num; }
 void display_fade_up_title(int amount)      { (void)amount; }
 void display_fade_down_title(int amount)    { (void)amount; }
@@ -3057,6 +3302,7 @@ static void display_present_cw_frame(GameState *state)
             display_automap_sdl_overlay(state);
         display_fps_overlay(state);
     }
+    display_text_screen_draw(0);
 
     if (g_screen_tint_enabled && g_screen_tint_a > 0) {
         if (g_gl_unpack_ok && g_gl_hud_ok) {
@@ -3107,6 +3353,42 @@ void display_draw_display(GameState *state)
 void display_present_last_frame(GameState *state)
 {
     display_present_cw_frame(state);
+}
+
+void display_present_text_screen(void)
+{
+    if (!g_sdl_ren) return;
+
+    int out_w = 0;
+    int out_h = 0;
+    if (SDL_GetRendererOutputSize(g_sdl_ren, &out_w, &out_h) != 0) {
+        out_w = g_present_width;
+        out_h = g_present_height;
+    }
+    if (out_w < 1) out_w = 1;
+    if (out_h < 1) out_h = 1;
+    if (out_w != g_present_width || out_h != g_present_height) {
+        display_update_letterbox(out_w, out_h);
+        g_present_width = out_w;
+        g_present_height = out_h;
+    }
+
+    if (g_gl_unpack_ok && g_gl_hud_ok) {
+        display_gl_output_size(&g_gl_overlay_win_w, &g_gl_overlay_win_h);
+        g_gl_viewport(0, 0, g_gl_overlay_win_w, g_gl_overlay_win_h);
+        g_gl_clear_color(0.0f, 0.0f, 0.0f, 1.0f);
+        g_gl_clear(GL_COLOR_BUFFER_BIT);
+        display_gl_overlay_begin();
+        display_text_screen_draw(1);
+        display_gl_overlay_end();
+    } else {
+        SDL_SetRenderDrawBlendMode(g_sdl_ren, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(g_sdl_ren, 0, 0, 0, 255);
+        SDL_RenderClear(g_sdl_ren);
+        display_text_screen_draw(1);
+    }
+
+    SDL_RenderPresent(g_sdl_ren);
 }
 
 void display_swap_buffers(void)
@@ -3200,10 +3482,14 @@ void display_ammo_bar(int16_t ammo)
  * ----------------------------------------------------------------------- */
 void display_draw_line_of_text(const char *text, int line)
 {
-    (void)text;
-    (void)line;
+    if (line < 0 || line >= DISPLAY_TEXT_MAX_LINES) return;
+    if (!text) text = "";
+    snprintf(g_text_lines[line], sizeof(g_text_lines[line]), "%s", text);
+    g_text_line_used[line] = g_text_lines[line][0] ? 1u : 0u;
 }
 
 void display_clear_text_screen(void)
 {
+    memset(g_text_lines, 0, sizeof(g_text_lines));
+    memset(g_text_line_used, 0, sizeof(g_text_line_used));
 }
