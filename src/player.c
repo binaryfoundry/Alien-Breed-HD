@@ -305,57 +305,6 @@ static bool hitscan_target_has_line_of_sight(GameState *state, const PlayerState
                           plr->stood_in_top, target->obj.in_top, 1) != 0u;
 }
 
-static bool player_contact_target_overlap(const GameState *state, const PlayerState *plr,
-                                          int plr_num, const GameObject *target)
-{
-    int target_type;
-    int player_type;
-    int16_t target_cid;
-    int16_t target_x;
-    int16_t target_z;
-    int32_t dx;
-    int32_t dz;
-    int16_t min_dist;
-    int16_t target_y;
-    int16_t target_bot;
-    int16_t target_top;
-    int16_t plr_y;
-    int16_t plr_bot;
-    int16_t plr_top;
-
-    if (!state || !plr || !target || !state->level.object_points) return false;
-    target_type = target->obj.number;
-    if (target_type < 0 || target_type > 20) return false;
-    player_type = (plr_num == 1) ? OBJ_NBR_PLR1 : OBJ_NBR_PLR2;
-
-    target_cid = OBJ_CID(target);
-    if (target_cid < 0 || target_cid >= state->level.num_object_points) return false;
-
-    {
-        const uint8_t *pt = state->level.object_points + (uint32_t)(uint16_t)target_cid * 8u;
-        target_x = obj_w(pt + 0);
-        target_z = obj_w(pt + 4);
-    }
-
-    dx = (int32_t)target_x - (int32_t)(plr->xoff >> 16);
-    dz = (int32_t)target_z - (int32_t)(plr->zoff >> 16);
-    if (dx < 0) dx = -dx;
-    if (dz < 0) dz = -dz;
-
-    min_dist = (int16_t)(col_box_table[target_type].width + col_box_table[player_type].width);
-    if (dx > min_dist || dz > min_dist) return false;
-
-    target_y = obj_w(target->raw + 4);
-    target_bot = (int16_t)(target_y - col_box_table[target_type].half_height);
-    target_top = (int16_t)(target_y + col_box_table[target_type].half_height);
-
-    plr_y = (int16_t)((plr->yoff + plr->height / 2) >> 7);
-    plr_bot = (int16_t)(plr_y - col_box_table[player_type].half_height);
-    plr_top = (int16_t)(plr_y + col_box_table[player_type].half_height);
-
-    return !(target_top < plr_bot || target_bot > plr_top);
-}
-
 /* Matches PlayerShoot.s MISSINSTANT path:
  * repeated MoveObject steps until hitwall, then use impact coords for pop sprite. */
 static bool trace_instant_miss_path(GameState *state, const PlayerState *plr,
@@ -3577,15 +3526,11 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
             if (obj_cid < 0) break;
 
             int obj_type = obj->obj.number;
-            bool contact_target = false;
-            if (!obs_in_line[i]) {
-                contact_target = player_contact_target_overlap(state, plr, plr_num, obj);
-                if (!contact_target) continue;
-            }
+            if (!obs_in_line[i]) continue;
             /* For instant weapons, use explicit LOS re-check below instead of
              * enemy can_see bits (which are floor-section strict and can reject
              * valid upper/lower split-zone targets). */
-            if (!contact_target && !hitscan_from_room &&
+            if (!hitscan_from_room &&
                 ((((uint8_t)obj->obj.can_see) & player_can_see_bit) == 0u))
                 continue;
             if (OBJ_ZONE(obj) < 0) continue;
@@ -3597,10 +3542,7 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
             if (obj_cid < 0 || obj_cid >= MAX_OBJECTS) continue;
 
             int32_t dist = obj_dists[obj_cid];
-            if (dist <= 0) {
-                if (!contact_target) continue;
-                dist = 1;
-            }
+            if (dist <= 0) continue;
             /* Runtime sin/cos table is half-scale (~16384) while Amiga
              * bigsine math in PlayerShoot uses full-scale (~32767). Scale
              * forward distance to preserve original auto-aim solve. */
@@ -3611,17 +3553,15 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
             int16_t obj_y = obj_w(obj->raw + 4);
             int32_t ydiff = ((int32_t)obj_y << 7) - plr->yoff;
             int32_t abs_ydiff = (ydiff < 0) ? -ydiff : ydiff;
-            if (!contact_target) {
-                if (manual_hitscan_aim) {
-                    if (!player_mouse_look_target_in_vertical_aim(state, plr, plr_num,
-                                                                  obj_type, ydiff, dist))
-                        continue;
-                } else if ((abs_ydiff / 44) > dist) {
+            if (manual_hitscan_aim) {
+                if (!player_mouse_look_target_in_vertical_aim(state, plr, plr_num,
+                                                              obj_type, ydiff, dist))
                     continue;
-                }
+            } else if ((abs_ydiff / 44) > dist) {
+                continue;
             }
 
-            if (hitscan_from_room && !contact_target) {
+            if (hitscan_from_room) {
                 int16_t los_target_x = 0;
                 int16_t los_target_z = 0;
                 int16_t los_target_y = obj_y;
