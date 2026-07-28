@@ -81,15 +81,13 @@ static int16_t robot_frame_counter = 0;
  * leaving enemies snagged until a debug stall produces a larger TempFrames lump.
  * Carry per-slot X/Z motion forward in fixed-point world units so total movement
  * over time matches the coarse Amiga cadence without giving up 50Hz simulation or
- * render interpolation. Keeping the pending world-space delta also lets us restore
- * blocked movement after wall/object collision instead of losing that pressure on
- * the tick where collision resolution returns the enemy to its old position. */
+ * render interpolation. This carry is only for fractional rounding; wall/object
+ * collision losses are not fed back because the original enemy scripts make one
+ * MoveObject call and do not store blocked movement pressure. */
 #define ENEMY_MOTION_FP_SCALE 16384
 /* Keep carry bounded so long wall pressure cannot build a large release jump. */
 #define ENEMY_MOTION_PENDING_MAX_UNITS 64
 #define ENEMY_MOTION_PENDING_MAX_FP ((int32_t)(ENEMY_MOTION_PENDING_MAX_UNITS * ENEMY_MOTION_FP_SCALE))
-/* Restore only tiny per-tick losses (rounding/slide trim), not full blocked intent. */
-#define ENEMY_MOTION_RESTORE_MAX_UNITS 4
 static const uint8_t *g_enemy_motion_slots_base = NULL;
 static int32_t g_enemy_motion_fp_x[MAX_OBJECTS];
 static int32_t g_enemy_motion_fp_z[MAX_OBJECTS];
@@ -263,33 +261,6 @@ static int32_t enemy_motion_apply_axis_fp(int slot, int axis, int64_t delta_fp)
     *pending_fp = (int32_t)(accum - (int64_t)delta * ENEMY_MOTION_FP_SCALE);
     enemy_motion_clamp_pending_slot(slot);
     return delta;
-}
-
-static void enemy_motion_restore_blocked_step(const GameState *state,
-                                              const GameObject *obj,
-                                              int32_t wanted_dx,
-                                              int32_t wanted_dz,
-                                              int32_t actual_dx,
-                                              int32_t actual_dz)
-{
-    int slot = enemy_motion_slot_index(state, obj);
-    int32_t miss_x;
-    int32_t miss_z;
-
-    if (slot < 0 || slot >= MAX_OBJECTS)
-        return;
-
-    miss_x = wanted_dx - actual_dx;
-    miss_z = wanted_dz - actual_dz;
-
-    if (miss_x > ENEMY_MOTION_RESTORE_MAX_UNITS) miss_x = ENEMY_MOTION_RESTORE_MAX_UNITS;
-    if (miss_x < -ENEMY_MOTION_RESTORE_MAX_UNITS) miss_x = -ENEMY_MOTION_RESTORE_MAX_UNITS;
-    if (miss_z > ENEMY_MOTION_RESTORE_MAX_UNITS) miss_z = ENEMY_MOTION_RESTORE_MAX_UNITS;
-    if (miss_z < -ENEMY_MOTION_RESTORE_MAX_UNITS) miss_z = -ENEMY_MOTION_RESTORE_MAX_UNITS;
-
-    g_enemy_motion_fp_x[slot] += miss_x * ENEMY_MOTION_FP_SCALE;
-    g_enemy_motion_fp_z[slot] += miss_z * ENEMY_MOTION_FP_SCALE;
-    enemy_motion_clamp_pending_slot(slot);
 }
 
 static int32_t enemy_motion_distance(int32_t dx, int32_t dz)
@@ -1327,15 +1298,11 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
     }
 
     MoveContext ctx;
-    int32_t intended_dx;
-    int32_t intended_dz;
     move_context_init(&ctx);
     ctx.oldx = obj_x;
     ctx.oldz = obj_z;
     enemy_motion_step_in_facing(obj, state, &ctx, move_facing,
                                 (int32_t)speed * (int32_t)state->temp_frames);
-    intended_dx = ctx.newx - ctx.oldx;
-    intended_dz = ctx.newz - ctx.oldz;
     ctx.thing_height = params->thing_height;
     int zone_slots = level_zone_slot_count(&state->level);
     {
@@ -1370,12 +1337,8 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
             ctx.newx = ctx.oldx;
             ctx.newz = ctx.oldz;
         } else {
-            /* Robot movement is especially sensitive in narrow passages; run it
-             * sub-stepped to match expected traversal and avoid wall-edge snagging. */
-            if (obj->obj.number == OBJ_NBR_ROBOT)
-                move_object_substepped(&ctx, &state->level);
-            else
-                move_object(&ctx, &state->level);
+            /* Amiga enemy scripts make one MoveObject call per movement tick. */
+            move_object(&ctx, &state->level);
         }
 
         /* Robot.s does not clamp MoveObject displacement here; clamping can also
@@ -1399,10 +1362,6 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
             ctx.newz = contact_z;
         }
 
-        enemy_motion_restore_blocked_step(state, obj,
-                                          intended_dx, intended_dz,
-                                          ctx.newx - ctx.oldx,
-                                          ctx.newz - ctx.oldz);
     }
 
     if (state->level.object_points) {
@@ -2620,8 +2579,6 @@ static int32_t robot_track_target(GameObject *obj, const EnemyParams *params,
         ctx.stood_in_top = obj->obj.in_top;
 
         if (!enemy_try_zone_teleport(obj, state, &ctx)) {
-            int32_t intended_dx = 0;
-            int32_t intended_dz = 0;
             int32_t move_dist = (int32_t)speed * (int32_t)state->temp_frames;
             int32_t toward_dist = dist - 300; /* Robot.s attack standoff range. */
             if (toward_dist < 0) toward_dist = 0;
@@ -2630,19 +2587,12 @@ static int32_t robot_track_target(GameObject *obj, const EnemyParams *params,
             if (move_dist > 0) {
                 enemy_motion_step_towards_point(obj, state, &ctx,
                                                 target_x, target_z, move_dist);
-                intended_dx = ctx.newx - ctx.oldx;
-                intended_dz = ctx.newz - ctx.oldz;
             } else {
                 ctx.newx = ctx.oldx;
                 ctx.newz = ctx.oldz;
             }
 
-            move_object_substepped(&ctx, &state->level);
-
-            enemy_motion_restore_blocked_step(state, obj,
-                                              intended_dx, intended_dz,
-                                              ctx.newx - ctx.oldx,
-                                              ctx.newz - ctx.oldz);
+            move_object(&ctx, &state->level);
         }
 
         if (state->level.object_points) {
@@ -2754,8 +2704,6 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
     }
 
     MoveContext ctx;
-    int32_t intended_dx = 0;
-    int32_t intended_dz = 0;
     move_context_init(&ctx);
     ctx.oldx = obj_x;
     ctx.oldz = obj_z;
@@ -2795,8 +2743,6 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
         if (apply_translation) {
             enemy_motion_step_in_facing(obj, state, &ctx, work_facing,
                                         (int32_t)speed * (int32_t)state->temp_frames);
-            intended_dx = ctx.newx - ctx.oldx;
-            intended_dz = ctx.newz - ctx.oldz;
         } else {
             ctx.newx = ctx.oldx;
             ctx.newz = ctx.oldz;
@@ -2809,8 +2755,6 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
         if (apply_translation) {
             enemy_motion_step_in_facing(obj, state, &ctx, facing,
                                         (int32_t)speed * (int32_t)state->temp_frames);
-            intended_dx = ctx.newx - ctx.oldx;
-            intended_dz = ctx.newz - ctx.oldz;
         } else {
             ctx.newx = ctx.oldx;
             ctx.newz = ctx.oldz;
@@ -2849,10 +2793,6 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
             ctx.newz = contact_z;
         }
 
-        enemy_motion_restore_blocked_step(state, obj,
-                                          intended_dx, intended_dz,
-                                          ctx.newx - ctx.oldx,
-                                          ctx.newz - ctx.oldz);
     }
 
     if (state->level.object_points) {
