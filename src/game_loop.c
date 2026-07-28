@@ -42,8 +42,11 @@
 #define KEY_UP      0x4C
 #define KEY_DOWN    0x4D
 
-#define INGAME_MENU_CONTINUE 0
-#define INGAME_MENU_EXIT     1
+#define INGAME_MENU_CONTINUE    0
+#define INGAME_MENU_MOUSE_LOOK  1
+#define INGAME_MENU_FPS_COUNTER 2
+#define INGAME_MENU_EXIT        3
+#define INGAME_MENU_COUNT       4
 #define INGAME_MENU_DIM_ALPHA 130
 
 /* Maximum frame count before clamping */
@@ -240,13 +243,26 @@ static void game_loop_clear_queued_actions(void)
 
 static void game_loop_draw_ingame_menu(GameState *state, const GameLoopCtx *ctx)
 {
+    char line[80];
+
     display_clear_text_screen();
     display_draw_line_of_text("ALIEN BREED 3D I", 0);
     display_draw_line_of_text(" ", 1);
     display_draw_line_of_text((ctx->ingame_menu_selected == INGAME_MENU_CONTINUE) ?
                               "> CONTINUE" : "  CONTINUE", 2);
+
+    snprintf(line, sizeof(line), "%c MOUSE LOOK   : %s",
+             (ctx->ingame_menu_selected == INGAME_MENU_MOUSE_LOOK) ? '>' : ' ',
+             (state && state->cfg_mouse_look) ? "ON" : "OFF");
+    display_draw_line_of_text(line, 3);
+
+    snprintf(line, sizeof(line), "%c FPS COUNTER  : %s",
+             (ctx->ingame_menu_selected == INGAME_MENU_FPS_COUNTER) ? '>' : ' ',
+             (state && state->cfg_show_fps) ? "ON" : "OFF");
+    display_draw_line_of_text(line, 4);
+
     display_draw_line_of_text((ctx->ingame_menu_selected == INGAME_MENU_EXIT) ?
-                              "> EXIT GAME" : "  EXIT GAME", 3);
+                              "> EXIT GAME" : "  EXIT GAME", 5);
     display_set_screen_tint(0, 0, 0, INGAME_MENU_DIM_ALPHA);
     display_present_last_frame(state);
     display_clear_screen_tint();
@@ -272,15 +288,35 @@ static void game_loop_open_ingame_menu(GameState *state, GameLoopCtx *ctx)
 
 static void game_loop_select_ingame_menu_item(GameState *state, GameLoopCtx *ctx)
 {
-    if (ctx->ingame_menu_selected == INGAME_MENU_EXIT) {
+    switch (ctx->ingame_menu_selected) {
+    case INGAME_MENU_CONTINUE:
+        game_loop_close_ingame_menu(state, ctx);
+        return;
+
+    case INGAME_MENU_MOUSE_LOOK:
+        state->cfg_mouse_look = !state->cfg_mouse_look;
+        if (!state->cfg_mouse_look) {
+            player_clear_mouse_look_aim_state(state);
+        }
+        break;
+
+    case INGAME_MENU_FPS_COUNTER:
+        state->cfg_show_fps = !state->cfg_show_fps;
+        break;
+
+    case INGAME_MENU_EXIT:
         display_clear_text_screen();
         input_clear_keyboard(state->key_map);
         state->finished_level = 0;
         state->running = false;
         return;
+
+    default:
+        break;
     }
 
-    game_loop_close_ingame_menu(state, ctx);
+    game_loop_pause_timing(state, ctx);
+    game_loop_draw_ingame_menu(state, ctx);
 }
 
 static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
@@ -301,10 +337,14 @@ static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
 
     bool menu_up = input_consume_key_press(KEY_UP);
     bool menu_down = input_consume_key_press(KEY_DOWN);
-    if (menu_up || menu_down) {
+    if (menu_up) {
         ctx->ingame_menu_selected =
-            (ctx->ingame_menu_selected == INGAME_MENU_CONTINUE) ?
-            INGAME_MENU_EXIT : INGAME_MENU_CONTINUE;
+            (ctx->ingame_menu_selected + INGAME_MENU_COUNT - 1) %
+            INGAME_MENU_COUNT;
+    }
+    if (menu_down) {
+        ctx->ingame_menu_selected =
+            (ctx->ingame_menu_selected + 1) % INGAME_MENU_COUNT;
     }
 
     bool menu_accept = input_consume_key_press(KEY_RETURN);

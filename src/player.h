@@ -26,6 +26,9 @@ void player2_control(GameState *state);
 /* Init player positions from level data (from LevelData2.s InitPlayer) */
 void player_init_from_level(GameState *state);
 
+/* Clear modern mouse-look view/aim state when mouse look is disabled. */
+void player_clear_mouse_look_aim_state(GameState *state);
+
 /* Shooting (from PlayerShoot.s) */
 void player1_shoot(GameState *state);
 void player2_shoot(GameState *state);

@@ -1099,7 +1099,7 @@ static void player_reset_mouse_look_aim(PlayerState *plr, GameState *state)
     if (sim_aim) *sim_aim = 0;
 }
 
-static void player_clear_mouse_look_aim_state(GameState *state)
+void player_clear_mouse_look_aim_state(GameState *state)
 {
     if (!state) return;
 
