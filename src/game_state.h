@@ -243,7 +243,7 @@ typedef struct {
     int16_t         max_level;          /* MAXLEVEL */
     int8_t          finished_level;     /* FINISHEDLEVEL */
 
-    /* ab3d.ini (see settings.c): -1 = use play_game defaults */
+    /* ab3d.ini (see settings.c): -1 = start_level=0 latest-autosave startup mode */
     int16_t         cfg_start_level;
     bool            infinite_health;
     bool            infinite_ammo;

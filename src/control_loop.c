@@ -750,9 +750,10 @@ static void control_setup_new_game_state(GameState *state)
     if (state->cfg_start_level >= 0 && state->cfg_start_level < MAX_LEVELS) {
         state->current_level = state->cfg_start_level;
         state->max_level = state->cfg_start_level;
-        printf("[CONTROL] Start level from ab3d.ini: %d\n", (int)state->current_level);
+        printf("[CONTROL] start_level=%d: starting configured level\n",
+               (int)state->current_level + 1);
     } else {
-        printf("[CONTROL] Bypassing menu - default start level %d\n", (int)state->current_level);
+        printf("[CONTROL] start_level=0: latest autosave startup mode\n");
     }
 }
 
@@ -776,6 +777,11 @@ static void control_try_start_from_latest_autosave(GameState *state)
     PlayerSaveLoadResult result;
 
     if (!state) return;
+    if (state->cfg_start_level >= 0) {
+        printf("[CONTROL] Autosave startup skipped because start_level=%d\n",
+               (int)state->cfg_start_level + 1);
+        return;
+    }
 
     slot = control_find_latest_autosave(&info);
     if (slot < 0)

@@ -5,7 +5,10 @@
 # file is removed and the next Build copies this template to ab3d.ini. The game
 # loads ab3d.ini first, then ab3d.ini.template in the same folder only if ab3d.ini is missing.
 
-# Starting level number: 1 = first level, 16 = last (16 levels total).
+# Startup level selection:
+# 0 = resume the latest autosave if present; otherwise start level 1.
+# 1..16 = always start that level and ignore autosaves on startup.
+# Flavor text is only shown after level transitions, not on startup.
 start_level=0
 
 # 1 = health stays at maximum (no damage from enemies/environment).
