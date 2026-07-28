@@ -29,6 +29,7 @@
 #include "display.h"
 #include "input.h"
 #include "audio.h"
+#include "settings.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -592,10 +593,12 @@ static void game_loop_select_ingame_menu_item(GameState *state, GameLoopCtx *ctx
         if (!state->cfg_mouse_look) {
             player_clear_mouse_look_aim_state(state);
         }
+        settings_save_menu_options(state);
         break;
 
     case INGAME_MENU_FPS_COUNTER:
         state->cfg_show_fps = !state->cfg_show_fps;
+        settings_save_menu_options(state);
         break;
 
     case INGAME_MENU_EXIT:

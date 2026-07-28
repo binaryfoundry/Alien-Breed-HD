@@ -10,8 +10,54 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#endif
 #include "logging.h"
 #define printf ab3d_log_printf
+
+#define SETTINGS_PATH_MAX 1024
+
+static char g_menu_options_save_path[SETTINGS_PATH_MAX] = "";
+static char g_menu_options_seed_path[SETTINGS_PATH_MAX] = "";
+
+static void apply_runtime_constraints(GameState *state);
+static void log_effective_settings(const GameState *state,
+                                   const char *source_label);
+
+#if defined(__EMSCRIPTEN__)
+#define SETTINGS_WEB_MOUSE_LOOK_KEY "ab3d1.settings.mouse_look"
+#define SETTINGS_WEB_SHOW_FPS_KEY   "ab3d1.settings.show_fps"
+
+EM_JS(int, settings_web_local_storage_get_int,
+      (const char *key_ptr, int default_value), {
+    var key = UTF8ToString(key_ptr);
+    try {
+        if (typeof localStorage === 'undefined') return default_value;
+        var value = localStorage.getItem(key);
+        if (value === null) return default_value;
+        value = String(value).toLowerCase();
+        return (value === '1' || value === 'true' ||
+                value === 'yes' || value === 'on') ? 1 : 0;
+    } catch (e) {
+        console.warn('[SETTINGS] localStorage read failed', e);
+        return default_value;
+    }
+});
+
+EM_JS(int, settings_web_local_storage_set_int,
+      (const char *key_ptr, int value), {
+    var key = UTF8ToString(key_ptr);
+    try {
+        if (typeof localStorage === 'undefined') return 0;
+        localStorage.setItem(key, value ? '1' : '0');
+        return 1;
+    } catch (e) {
+        console.warn('[SETTINGS] localStorage write failed', e);
+        return 0;
+    }
+});
+#endif
 
 static char *trim(char *s)
 {
@@ -44,6 +90,244 @@ static int parse_bool(const char *v)
     if (strncmp(v, "on", 2) == 0 || strncmp(v, "yes", 3) == 0)
         return 1;
     return 0;
+}
+
+static void settings_copy_path(char *dst, size_t dst_size, const char *src)
+{
+    if (!dst || dst_size == 0) return;
+    if (!src) src = "";
+    snprintf(dst, dst_size, "%s", src);
+}
+
+static void settings_remember_menu_options_paths(const char *save_path,
+                                                 const char *seed_path)
+{
+    settings_copy_path(g_menu_options_save_path,
+                       sizeof(g_menu_options_save_path),
+                       save_path);
+    settings_copy_path(g_menu_options_seed_path,
+                       sizeof(g_menu_options_seed_path),
+                       seed_path);
+}
+
+#if !defined(__EMSCRIPTEN__)
+static int settings_file_exists(const char *path)
+{
+    FILE *f;
+    if (!path || !*path) return 0;
+    f = fopen(path, "rb");
+    if (!f) return 0;
+    fclose(f);
+    return 1;
+}
+
+static void settings_default_menu_options_save_path(char *out, size_t out_size)
+{
+    char *base;
+
+    if (!out || out_size == 0) return;
+    base = SDL_GetBasePath();
+    if (base && *base) {
+        snprintf(out, out_size, "%sab3d.ini", base);
+    } else {
+        snprintf(out, out_size, "ab3d.ini");
+    }
+    if (base) SDL_free(base);
+}
+
+static int settings_path_with_suffix(char *out, size_t out_size,
+                                     const char *path, const char *suffix)
+{
+    int n;
+    if (!out || out_size == 0 || !path || !suffix) return 0;
+    n = snprintf(out, out_size, "%s%s", path, suffix);
+    return n >= 0 && n < (int)out_size;
+}
+
+static int settings_extract_line_key(const char *line, char *out, size_t out_size)
+{
+    const char *p;
+    const char *eq;
+    const char *end;
+    size_t n;
+
+    if (!line || !out || out_size == 0) return 0;
+    out[0] = '\0';
+
+    p = line;
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (*p == '\0' || *p == '#' || *p == ';') return 0;
+
+    eq = strchr(p, '=');
+    if (!eq) return 0;
+    end = eq;
+    while (end > p && isspace((unsigned char)*(end - 1))) end--;
+    n = (size_t)(end - p);
+    if (n == 0 || n >= out_size) return 0;
+
+    for (size_t i = 0; i < n; i++) {
+        out[i] = (char)tolower((unsigned char)p[i]);
+    }
+    out[n] = '\0';
+    return 1;
+}
+
+static int settings_write_menu_options_line(FILE *out,
+                                            const char *line,
+                                            const GameState *state,
+                                            int *saw_mouse_look,
+                                            int *saw_show_fps)
+{
+    char key[64];
+
+    if (!settings_extract_line_key(line, key, sizeof(key))) {
+        return fputs(line, out) >= 0;
+    }
+
+    if (strcmp(key, "mouse_look") == 0) {
+        *saw_mouse_look = 1;
+        return fprintf(out, "mouse_look=%d\n",
+                       state->cfg_mouse_look ? 1 : 0) >= 0;
+    }
+    if (strcmp(key, "show_fps") == 0 || strcmp(key, "fps_counter") == 0) {
+        *saw_show_fps = 1;
+        return fprintf(out, "%s=%d\n",
+                       strcmp(key, "fps_counter") == 0 ? "fps_counter" : "show_fps",
+                       state->cfg_show_fps ? 1 : 0) >= 0;
+    }
+
+    return fputs(line, out) >= 0;
+}
+
+static int settings_append_missing_menu_options(FILE *out,
+                                                const GameState *state,
+                                                int saw_mouse_look,
+                                                int saw_show_fps)
+{
+    if (saw_mouse_look && saw_show_fps) return 1;
+    if (fprintf(out, "\n# Runtime menu options\n") < 0) return 0;
+    if (!saw_mouse_look &&
+        fprintf(out, "mouse_look=%d\n", state->cfg_mouse_look ? 1 : 0) < 0) {
+        return 0;
+    }
+    if (!saw_show_fps &&
+        fprintf(out, "show_fps=%d\n", state->cfg_show_fps ? 1 : 0) < 0) {
+        return 0;
+    }
+    return 1;
+}
+
+static void settings_save_menu_options_to_ini(const GameState *state)
+{
+    char target[SETTINGS_PATH_MAX];
+    char tmp[SETTINGS_PATH_MAX];
+    const char *source = NULL;
+    FILE *in = NULL;
+    FILE *out = NULL;
+    char line[1024];
+    int saw_mouse_look = 0;
+    int saw_show_fps = 0;
+    int ok = 1;
+
+    if (!state) return;
+
+    if (g_menu_options_save_path[0]) {
+        settings_copy_path(target, sizeof(target), g_menu_options_save_path);
+    } else {
+        settings_default_menu_options_save_path(target, sizeof(target));
+    }
+    if (!target[0]) {
+        printf("[SETTINGS] menu options save skipped: no target path\n");
+        return;
+    }
+
+    if (settings_file_exists(target)) {
+        source = target;
+    } else if (settings_file_exists(g_menu_options_seed_path)) {
+        source = g_menu_options_seed_path;
+    }
+
+    if (!settings_path_with_suffix(tmp, sizeof(tmp), target, ".tmp")) {
+        printf("[SETTINGS] menu options save skipped: path too long\n");
+        return;
+    }
+
+    if (source) {
+        in = fopen(source, "rb");
+        if (!in) {
+            printf("[SETTINGS] menu options save: could not read %s\n", source);
+            return;
+        }
+    }
+
+    out = fopen(tmp, "wb");
+    if (!out) {
+        if (in) fclose(in);
+        printf("[SETTINGS] menu options save: could not write %s\n", tmp);
+        return;
+    }
+
+    if (in) {
+        while (fgets(line, sizeof(line), in)) {
+            if (!settings_write_menu_options_line(out, line, state,
+                                                  &saw_mouse_look,
+                                                  &saw_show_fps)) {
+                ok = 0;
+                break;
+            }
+        }
+        if (ferror(in)) ok = 0;
+        fclose(in);
+    }
+
+    if (ok) {
+        ok = settings_append_missing_menu_options(out, state,
+                                                  saw_mouse_look,
+                                                  saw_show_fps);
+    }
+    if (fclose(out) != 0) ok = 0;
+
+    if (!ok) {
+        remove(tmp);
+        printf("[SETTINGS] menu options save failed while updating %s\n",
+               target);
+        return;
+    }
+
+    if (rename(tmp, target) != 0) {
+        remove(target);
+        if (rename(tmp, target) != 0) {
+            remove(tmp);
+            printf("[SETTINGS] menu options save failed replacing %s\n",
+                   target);
+            return;
+        }
+    }
+}
+#endif
+
+static void settings_apply_persistent_menu_options(GameState *state)
+{
+#if defined(__EMSCRIPTEN__)
+    if (!state) return;
+    state->cfg_mouse_look =
+        settings_web_local_storage_get_int(
+            SETTINGS_WEB_MOUSE_LOOK_KEY,
+            state->cfg_mouse_look ? 1 : 0) != 0;
+    state->cfg_show_fps =
+        settings_web_local_storage_get_int(
+            SETTINGS_WEB_SHOW_FPS_KEY,
+            state->cfg_show_fps ? 1 : 0) != 0;
+#else
+    (void)state;
+#endif
+}
+
+static void settings_finalize_load(GameState *state, const char *source_label)
+{
+    apply_runtime_constraints(state);
+    settings_apply_persistent_menu_options(state);
+    log_effective_settings(state, source_label);
 }
 
 static int parse_display_mode_value(const char *v, int8_t *out_mode)
@@ -323,36 +607,77 @@ static int try_load_settings_file(GameState *state, const char *path, const char
     fclose(f);
     printf("[SETTINGS] Loading INI: %s%s\n", path, label ? label : "");
     parse_file(state, path);
-    apply_runtime_constraints(state);
-    log_effective_settings(state, "Loaded");
+    settings_finalize_load(state, "Loaded");
     return 1;
 }
 
 void settings_load(GameState *state)
 {
-    const char *base = SDL_GetBasePath();
+    char *base = SDL_GetBasePath();
+    char default_save_path[SETTINGS_PATH_MAX] = "ab3d.ini";
+
     if (base && *base) {
-        char path_ini[1024];
-        char path_tpl[1024];
+        char path_ini[SETTINGS_PATH_MAX];
+        char path_tpl[SETTINGS_PATH_MAX];
         snprintf(path_ini, sizeof(path_ini), "%sab3d.ini", base);
         snprintf(path_tpl, sizeof(path_tpl), "%sab3d.ini.template", base);
+        settings_copy_path(default_save_path, sizeof(default_save_path),
+                           path_ini);
 
-        if (try_load_settings_file(state, path_ini, NULL)) return;
-        if (try_load_settings_file(state, path_tpl, " (ab3d.ini not found)")) return;
+        if (try_load_settings_file(state, path_ini, NULL)) {
+            settings_remember_menu_options_paths(path_ini, path_ini);
+            SDL_free(base);
+            return;
+        }
+        if (try_load_settings_file(state, path_tpl, " (ab3d.ini not found)")) {
+            settings_remember_menu_options_paths(path_ini, path_tpl);
+            SDL_free(base);
+            return;
+        }
     }
 
     /* Fallbacks for IDE/debug runs where users keep INI in project root. */
-    if (try_load_settings_file(state, "ab3d.ini", " (from working directory)")) return;
-    if (try_load_settings_file(state, "ab3d.ini.template", " (from working directory)")) return;
-    if (try_load_settings_file(state, "data/ab3d.ini", " (from working directory data/)")) return;
+    if (try_load_settings_file(state, "ab3d.ini", " (from working directory)")) {
+        settings_remember_menu_options_paths("ab3d.ini", "ab3d.ini");
+        if (base) SDL_free(base);
+        return;
+    }
+    if (try_load_settings_file(state, "ab3d.ini.template", " (from working directory)")) {
+        settings_remember_menu_options_paths("ab3d.ini", "ab3d.ini.template");
+        if (base) SDL_free(base);
+        return;
+    }
+    if (try_load_settings_file(state, "data/ab3d.ini", " (from working directory data/)")) {
+        settings_remember_menu_options_paths("data/ab3d.ini", "data/ab3d.ini");
+        if (base) SDL_free(base);
+        return;
+    }
 
     if (base && *base) {
         printf("[SETTINGS] No ab3d.ini or ab3d.ini.template in %s (or working directory fallbacks)\n", base);
     } else {
         printf("[SETTINGS] SDL_GetBasePath unavailable and no INI found in working directory fallbacks\n");
     }
-    apply_runtime_constraints(state);
-    log_effective_settings(state, "Defaults");
+    settings_remember_menu_options_paths(default_save_path, NULL);
+    if (base) SDL_free(base);
+    settings_finalize_load(state, "Defaults");
+}
+
+void settings_save_menu_options(const GameState *state)
+{
+    if (!state) return;
+#if defined(__EMSCRIPTEN__)
+    if (!settings_web_local_storage_set_int(
+            SETTINGS_WEB_MOUSE_LOOK_KEY,
+            state->cfg_mouse_look ? 1 : 0) ||
+        !settings_web_local_storage_set_int(
+            SETTINGS_WEB_SHOW_FPS_KEY,
+            state->cfg_show_fps ? 1 : 0)) {
+        printf("[SETTINGS] menu options localStorage save failed\n");
+    }
+#else
+    settings_save_menu_options_to_ini(state);
+#endif
 }
 
 void settings_log_recap(const GameState *state)

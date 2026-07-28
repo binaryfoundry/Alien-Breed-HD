@@ -10,6 +10,9 @@
 /* Load ab3d.ini or ab3d.ini.template from SDL_GetBasePath(). Call after SDL_Init. */
 void settings_load(GameState *state);
 
+/* Persist runtime main-menu options that are safe to change while playing. */
+void settings_save_menu_options(const GameState *state);
+
 /* One-line summary of INI-backed fields (same values as at startup). Call where useful for logs. */
 void settings_log_recap(const GameState *state);
 
