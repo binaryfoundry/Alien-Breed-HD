@@ -3479,8 +3479,6 @@ static void display_present_cw_frame(GameState *state)
             display_automap_sdl_overlay(state);
         display_fps_overlay(state);
     }
-    display_text_screen_draw(255);
-
     if (g_screen_tint_enabled && g_screen_tint_a > 0) {
         if (g_gl_unpack_ok && g_gl_hud_ok) {
             SDL_Rect tr = g_present_dst_rect;
@@ -3496,6 +3494,7 @@ static void display_present_cw_frame(GameState *state)
             SDL_RenderFillRect(g_sdl_ren, &g_present_dst_rect);
         }
     }
+    display_text_screen_draw(255);
 
     if (g_gl_unpack_ok && g_gl_hud_ok)
         display_gl_overlay_end();

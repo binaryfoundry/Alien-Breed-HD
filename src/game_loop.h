@@ -40,6 +40,8 @@ typedef struct GameLoopCtx {
     Uint32 vblank_remainder_ms;
     Uint64 fps_sample_start_counter;
     int fps_frames_in_sample;
+    int ingame_menu_open;
+    int ingame_menu_selected;
 } GameLoopCtx;
 
 void game_loop_ctx_init(GameLoopCtx *ctx, GameState *state);

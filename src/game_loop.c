@@ -36,7 +36,15 @@
 
 /* Amiga key codes used in the original */
 #define KEY_PAUSE   0x19
+#define KEY_RETURN  0x44
 #define KEY_ESC     0x45
+#define KEY_SPACE   0x40
+#define KEY_UP      0x4C
+#define KEY_DOWN    0x4D
+
+#define INGAME_MENU_CONTINUE 0
+#define INGAME_MENU_EXIT     1
+#define INGAME_MENU_DIM_ALPHA 130
 
 /* Maximum frame count before clamping */
 #define MAX_TEMP_FRAMES 15
@@ -208,6 +216,111 @@ void game_loop_ctx_init(GameLoopCtx *ctx, GameState *state)
     state->obj_interp_alpha = 0.0f;
 }
 
+static void game_loop_pause_timing(GameState *state, GameLoopCtx *ctx)
+{
+    ctx->last_ticks = SDL_GetTicks();
+    ctx->pending_vblanks = 0;
+    ctx->vblank_remainder_ms = 0;
+    ctx->fps_sample_start_counter = SDL_GetPerformanceCounter();
+    ctx->fps_frames_in_sample = 0;
+    state->obj_interp_alpha = 0.0f;
+}
+
+static void game_loop_clear_queued_actions(void)
+{
+    (void)input_f2_pick_log_requested();
+    (void)input_f5_save_requested();
+    (void)input_f9_load_requested();
+    (void)input_f6_gouraud_visualize_requested();
+    (void)input_f7_spill_visualize_requested();
+    (void)input_automap_toggle_requested();
+    (void)input_automap_pgup_requested();
+    (void)input_automap_pgdn_requested();
+}
+
+static void game_loop_draw_ingame_menu(GameState *state, const GameLoopCtx *ctx)
+{
+    display_clear_text_screen();
+    display_draw_line_of_text("ALIEN BREED 3D I", 0);
+    display_draw_line_of_text(" ", 1);
+    display_draw_line_of_text((ctx->ingame_menu_selected == INGAME_MENU_CONTINUE) ?
+                              "> CONTINUE" : "  CONTINUE", 2);
+    display_draw_line_of_text((ctx->ingame_menu_selected == INGAME_MENU_EXIT) ?
+                              "> EXIT GAME" : "  EXIT GAME", 3);
+    display_set_screen_tint(0, 0, 0, INGAME_MENU_DIM_ALPHA);
+    display_present_last_frame(state);
+    display_clear_screen_tint();
+}
+
+static void game_loop_close_ingame_menu(GameState *state, GameLoopCtx *ctx)
+{
+    ctx->ingame_menu_open = 0;
+    display_clear_text_screen();
+    input_clear_keyboard(state->key_map);
+    game_loop_pause_timing(state, ctx);
+}
+
+static void game_loop_open_ingame_menu(GameState *state, GameLoopCtx *ctx)
+{
+    ctx->ingame_menu_open = 1;
+    ctx->ingame_menu_selected = INGAME_MENU_CONTINUE;
+    input_clear_keyboard(state->key_map);
+    game_loop_clear_queued_actions();
+    game_loop_pause_timing(state, ctx);
+    game_loop_draw_ingame_menu(state, ctx);
+}
+
+static void game_loop_select_ingame_menu_item(GameState *state, GameLoopCtx *ctx)
+{
+    if (ctx->ingame_menu_selected == INGAME_MENU_EXIT) {
+        display_clear_text_screen();
+        input_clear_keyboard(state->key_map);
+        state->finished_level = 0;
+        state->running = false;
+        return;
+    }
+
+    game_loop_close_ingame_menu(state, ctx);
+}
+
+static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
+{
+    if (input_consume_key_press(KEY_ESC)) {
+        game_loop_clear_queued_actions();
+        game_loop_close_ingame_menu(state, ctx);
+        return 1;
+    }
+    if (input_key_pressed(state->key_map, KEY_ESC)) {
+        game_loop_clear_queued_actions();
+        display_clear_text_screen();
+        input_clear_keyboard(state->key_map);
+        state->finished_level = 0;
+        state->running = false;
+        return 1;
+    }
+
+    bool menu_up = input_consume_key_press(KEY_UP);
+    bool menu_down = input_consume_key_press(KEY_DOWN);
+    if (menu_up || menu_down) {
+        ctx->ingame_menu_selected =
+            (ctx->ingame_menu_selected == INGAME_MENU_CONTINUE) ?
+            INGAME_MENU_EXIT : INGAME_MENU_CONTINUE;
+    }
+
+    bool menu_accept = input_consume_key_press(KEY_RETURN);
+    menu_accept = input_consume_key_press(KEY_SPACE) || menu_accept;
+    if (menu_accept) {
+        game_loop_clear_queued_actions();
+        game_loop_select_ingame_menu_item(state, ctx);
+        return 1;
+    }
+
+    game_loop_clear_queued_actions();
+    game_loop_pause_timing(state, ctx);
+    game_loop_draw_ingame_menu(state, ctx);
+    return 1;
+}
+
 /*
  * game_loop_tick - One display frame of the main game loop (Emscripten calls this
  * from the browser main loop; native game_loop wraps it in a while).
@@ -225,6 +338,18 @@ void game_loop_tick(GameState *state, GameLoopCtx *ctx)
 #if defined(__EMSCRIPTEN__)
         display_emscripten_frame_resize_poll();
 #endif
+        if (input_fullscreen_toggle_requested())
+            display_toggle_fullscreen();
+
+        if (ctx->ingame_menu_open) {
+            game_loop_update_ingame_menu(state, ctx);
+            return;
+        }
+        if (input_consume_key_press(KEY_ESC)) {
+            game_loop_open_ingame_menu(state, ctx);
+            return;
+        }
+
         bool f2_pick_log_requested = input_f2_pick_log_requested();
         if (input_f5_save_requested())
             player_save_position(state);
@@ -251,8 +376,6 @@ void game_loop_tick(GameState *state, GameLoopCtx *ctx)
             renderer_automap_adjust_scale(-1); /* zoom in: fewer world units per pixel */
         if (input_automap_pgdn_requested())
             renderer_automap_adjust_scale(1);  /* zoom out */
-        if (input_fullscreen_toggle_requested())
-            display_toggle_fullscreen();
 
         /* ================================================================
          * Frame timing: accumulate 50Hz VBlanks from real elapsed time

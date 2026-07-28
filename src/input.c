@@ -19,6 +19,7 @@
  * and game_loop.c KEY_ESC, ControlLoop.s).
  * ----------------------------------------------------------------------- */
 #define AMIGA_KEY_ESC       0x45
+#define AMIGA_KEY_RETURN    0x44
 #define AMIGA_KEY_SPACE     0x40
 #define AMIGA_KEY_UP        0x4C
 #define AMIGA_KEY_DOWN      0x4D
@@ -59,6 +60,8 @@ static uint8_t sdl_to_amiga(SDL_Scancode sc)
 {
     switch (sc) {
     case SDL_SCANCODE_ESCAPE:   return AMIGA_KEY_ESC;
+    case SDL_SCANCODE_RETURN:   return AMIGA_KEY_RETURN;
+    case SDL_SCANCODE_KP_ENTER: return AMIGA_KEY_RETURN;
     case SDL_SCANCODE_SPACE:    return AMIGA_KEY_SPACE;
     case SDL_SCANCODE_UP:       return AMIGA_KEY_UP;
     case SDL_SCANCODE_W:        return AMIGA_KEY_UP;       /* WASD: W = forward */
@@ -507,10 +510,11 @@ void input_update(uint8_t *key_map, uint8_t *last_pressed)
                  * false here — do not branch on that.) */
                 SDL_bool had_capture = g_input_capture_active || SDL_GetRelativeMouseMode();
                 input_apply_relative_mouse(SDL_FALSE, key_map);
+                g_keyboard_pressed[AMIGA_KEY_ESC] = 1;
+                if (last_pressed) *last_pressed = AMIGA_KEY_ESC;
                 /* Quit to menu only when Esc was not releasing in-game capture */
                 if (!had_capture) {
                     input_set_key_state(g_keyboard_keys, AMIGA_KEY_ESC, true);
-                    if (last_pressed) *last_pressed = AMIGA_KEY_ESC;
                 }
                 break;
             }
