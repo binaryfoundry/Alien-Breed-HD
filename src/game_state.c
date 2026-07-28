@@ -61,6 +61,7 @@ void game_state_init(GameState *state)
 
     state->do_anything = true;
     state->nasty = true; /* enemies active in single player */
+    state->restart_game_requested = false;
 
     state->cfg_start_level = -1;
     state->infinite_health = false;
@@ -105,6 +106,7 @@ void game_state_setup_default(GameState *state)
     state->plr1_clumptime = 0;
     state->plr2_clumptime = 0;
     state->nasty = true;
+    state->restart_game_requested = false;
 }
 
 /*

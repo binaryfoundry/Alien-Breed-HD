@@ -276,6 +276,7 @@ typedef struct {
     bool            nasty;              /* NASTY - enemies active */
     bool            read_controls;      /* READCONTROLS */
     bool            automap_visible;    /* PC: Tab toggles overlay; default off */
+    bool            restart_game_requested; /* PC: in-game menu requested a fresh game */
 
     /* F9 save: load different level from file, then apply positions */
     bool            debug_f9_need_level_reload;

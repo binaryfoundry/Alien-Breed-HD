@@ -767,6 +767,12 @@ void play_game_load_shared_assets(GameState *state)
 #if !defined(__EMSCRIPTEN__)
 int play_game_outer_should_continue(GameState *state)
 {
+    if (state->restart_game_requested) {
+        control_setup_new_game_state(state);
+        printf("[CONTROL] Restarting new game from in-game menu\n");
+        return 1;
+    }
+
     if (!state->finished_level) {
         if (state->energy <= 0) {
             audio_play_module_blocking_once_with_tick("sounds/mt/GameOver.mt",
@@ -803,6 +809,7 @@ int play_game_outer_should_continue(GameState *state)
 }
 #else
 typedef enum {
+    EM_OUTER_BR_NEW_GAME,
     EM_OUTER_BR_GAMEOVER,
     EM_OUTER_BR_ENDGAME,
     EM_OUTER_BR_WELLDONE,
@@ -814,6 +821,11 @@ static Uint32 s_em_fade_t0;
 
 int play_game_outer_emscripten_begin(GameState *state)
 {
+    if (state->restart_game_requested) {
+        s_em_outer_br = EM_OUTER_BR_NEW_GAME;
+        return 0;
+    }
+
     if (!state->finished_level) {
         if (state->energy <= 0) {
             s_em_outer_br = EM_OUTER_BR_GAMEOVER;
@@ -896,6 +908,10 @@ int play_game_outer_emscripten_fade_frame(GameState *state)
 int play_game_outer_emscripten_finish(GameState *state)
 {
     switch (s_em_outer_br) {
+    case EM_OUTER_BR_NEW_GAME:
+        control_setup_new_game_state(state);
+        printf("[CONTROL] Restarting new game from in-game menu\n");
+        return 1;
     case EM_OUTER_BR_GAMEOVER:
         display_clear_screen_tint();
         printf("[MUSIC] outcome: game over\n");
