@@ -189,6 +189,7 @@ static int          g_ascii_font_tex_h;
 static int          g_ascii_font_load_attempted;
 static char         g_text_lines[DISPLAY_TEXT_MAX_LINES][DISPLAY_TEXT_MAX_CHARS];
 static uint8_t      g_text_line_used[DISPLAY_TEXT_MAX_LINES];
+static uint8_t      g_text_line_alpha[DISPLAY_TEXT_MAX_LINES];
 static void         display_ascii_font_free(void);
 static void         display_text_screen_draw(Uint8 alpha);
 
@@ -1365,6 +1366,7 @@ typedef struct DisplayTextRun {
     const char *text;
     int start;
     int len;
+    Uint8 alpha;
 } DisplayTextRun;
 
 static int display_ascii_text_is_blank(const char *text)
@@ -1460,24 +1462,28 @@ static void display_text_trim_span(const char *text, int *start, int *len)
 }
 
 static int display_text_append_run(DisplayTextRun *runs, int max_runs,
-                                   int *count, const char *text, int start, int len)
+                                   int *count, const char *text, int start,
+                                   int len, Uint8 alpha)
 {
     if (*count >= max_runs) return 0;
     runs[*count].text = text;
     runs[*count].start = start;
     runs[*count].len = len;
+    runs[*count].alpha = alpha;
     (*count)++;
     return 1;
 }
 
 static int display_text_append_wrapped(DisplayTextRun *runs, int max_runs,
-                                       int *count, const char *text, int max_cols)
+                                       int *count, const char *text, int max_cols,
+                                       Uint8 alpha)
 {
     int start = 0;
     int len = 0;
     display_text_trim_span(text, &start, &len);
     if (len < 1) {
-        return display_text_append_run(runs, max_runs, count, text, 0, 0);
+        return display_text_append_run(runs, max_runs, count, text, 0, 0,
+                                       alpha);
     }
 
     if (max_cols < 8) max_cols = 8;
@@ -1507,7 +1513,8 @@ static int display_text_append_wrapped(DisplayTextRun *runs, int max_runs,
             run_len--;
         }
         if (run_len > 0 &&
-            !display_text_append_run(runs, max_runs, count, text, pos, run_len)) {
+            !display_text_append_run(runs, max_runs, count, text, pos, run_len,
+                                     alpha)) {
             return 0;
         }
 
@@ -1536,14 +1543,16 @@ static int display_text_build_wrapped_layout(DisplayTextRun *runs, int max_runs,
     for (int i = first_line; i <= last_line; i++) {
         if (!g_text_line_used[i] || display_ascii_text_is_blank(g_text_lines[i])) {
             if (!collapse_blank_rows &&
-                !display_text_append_run(runs, max_runs, &count, g_text_lines[i], 0, 0)) {
+                !display_text_append_run(runs, max_runs, &count, g_text_lines[i],
+                                         0, 0, g_text_line_alpha[i])) {
                 return 0;
             }
             continue;
         }
 
         int before = count;
-        if (!display_text_append_wrapped(runs, max_runs, &count, g_text_lines[i], max_cols)) {
+        if (!display_text_append_wrapped(runs, max_runs, &count, g_text_lines[i],
+                                         max_cols, g_text_line_alpha[i])) {
             return 0;
         }
         for (int j = before; j < count; j++) {
@@ -1652,8 +1661,9 @@ static void display_text_screen_draw(Uint8 alpha)
         if (x < r.x + margin_x) x = r.x + margin_x;
         int y = top + i * line_h;
         if (y > r.y + r.h - margin_y - draw_h) continue;
+        Uint8 run_alpha = (Uint8)(((int)alpha * (int)runs[i].alpha + 127) / 255);
         display_bitmap_text_span_abs(runs[i].text, runs[i].start, runs[i].len,
-                                     x, y, scale_q, alpha);
+                                     x, y, scale_q, run_alpha);
     }
 }
 
@@ -3665,14 +3675,23 @@ void display_ammo_bar(int16_t ammo)
  * ----------------------------------------------------------------------- */
 void display_draw_line_of_text(const char *text, int line)
 {
+    display_draw_line_of_text_alpha(text, line, 255);
+}
+
+void display_draw_line_of_text_alpha(const char *text, int line, int alpha)
+{
     if (line < 0 || line >= DISPLAY_TEXT_MAX_LINES) return;
     if (!text) text = "";
+    if (alpha < 0) alpha = 0;
+    if (alpha > 255) alpha = 255;
     snprintf(g_text_lines[line], sizeof(g_text_lines[line]), "%s", text);
     g_text_line_used[line] = g_text_lines[line][0] ? 1u : 0u;
+    g_text_line_alpha[line] = (uint8_t)alpha;
 }
 
 void display_clear_text_screen(void)
 {
     memset(g_text_lines, 0, sizeof(g_text_lines));
     memset(g_text_line_used, 0, sizeof(g_text_line_used));
+    memset(g_text_line_alpha, 255, sizeof(g_text_line_alpha));
 }

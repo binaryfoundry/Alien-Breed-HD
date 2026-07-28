@@ -465,6 +465,8 @@ static int control_level_text_wait_and_fade_out(GameState *state)
  */
 void play_the_game_prepare_level(GameState *state, bool *copper_screen_ready)
 {
+    bool applying_pending_save = state->f9_pending_apply_save;
+
     state->running = true;
 
     printf("[GAME] === PlayTheGame: level %d ===\n", state->current_level);
@@ -583,6 +585,10 @@ void play_the_game_prepare_level(GameState *state, bool *copper_screen_ready)
 
     game_rebuild_level_conditions(state);
 
+    if (!applying_pending_save && state->mode == MODE_SINGLE) {
+        player_save_autosave(state);
+    }
+
     printf("[GAME] Entering main loop...\n");
 }
 
@@ -591,7 +597,7 @@ int play_the_game_after_game_loop(GameState *state)
     if (state->debug_f9_need_level_reload) {
         state->debug_f9_need_level_reload = false;
         state->f9_pending_apply_save = true;
-        printf("[GAME] F9: reloading level %d and applying save state\n",
+        printf("[GAME] Reloading level %d and applying save state\n",
                (int)state->current_level);
         audio_mt_end();
         io_release_level_memory(&state->level);

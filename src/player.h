@@ -46,8 +46,19 @@ typedef enum {
     PLAYER_SAVE_LOAD_NEED_LEVEL_RELOAD
 } PlayerSaveLoadResult;
 
+typedef struct {
+    bool    present;
+    int16_t level;
+    char    timestamp[32];
+} PlayerAutosaveInfo;
+
 /* Read savegame.bin. Full saves stage a pending restore and request level reload. */
 PlayerSaveLoadResult player_load_save_from_file(GameState *state);
+
+/* Autosave is separate from F5/F9 quicksave and uses autosave.bin. */
+void player_save_autosave(GameState *state);
+PlayerSaveLoadResult player_load_autosave_from_file(GameState *state);
+bool player_read_autosave_info(PlayerAutosaveInfo *info);
 
 /* After level reload, apply the pending full restore (or legacy position payload). */
 void player_apply_save_payload_after_level_load(GameState *state);

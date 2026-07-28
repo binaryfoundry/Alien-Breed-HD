@@ -43,6 +43,9 @@ typedef struct GameLoopCtx {
     int ingame_menu_open;
     int ingame_menu_screen;
     int ingame_menu_selected;
+    int ingame_menu_autosave_available;
+    int16_t ingame_menu_autosave_level;
+    char ingame_menu_autosave_timestamp[32];
 } GameLoopCtx;
 
 void game_loop_ctx_init(GameLoopCtx *ctx, GameState *state);

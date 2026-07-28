@@ -20,6 +20,16 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
+#if defined(_WIN32) || defined(_WIN64)
+#include <sys/stat.h>
+#define AB3D_SAVE_STAT(path, st) _stat((path), (st))
+#define AB3D_SAVE_STAT_BUF struct _stat
+#else
+#include <sys/stat.h>
+#define AB3D_SAVE_STAT(path, st) stat((path), (st))
+#define AB3D_SAVE_STAT_BUF struct stat
+#endif
 
 /* -----------------------------------------------------------------------
  * Constants from the original ASM
@@ -1837,6 +1847,7 @@ void player2_control(GameState *state)
 #define SAVE_MAGIC_FULL   "AB3S"
 #define SAVE_VERSION_FULL 7u
 #define SAVE_FILE_SUBPATH "savegame.bin"
+#define AUTOSAVE_FILE_SUBPATH "autosave.bin"
 #define SAVE_MAX_TABLE_ENTRIES 4096
 #define SAVE_MAX_CHUNK_BYTES (256u * 1024u * 1024u)
 #define SAVE_NASTY_SLOT_SCRATCH_BYTES 64u
@@ -1934,6 +1945,65 @@ static bool player_save_read_exact(FILE *f, void *data, size_t bytes)
 {
     if (bytes == 0) return true;
     return f && data && fread(data, 1, bytes, f) == bytes;
+}
+
+static void player_save_format_timestamp(time_t t, char *out, size_t out_size)
+{
+    struct tm tm_buf;
+    if (!out || out_size == 0) return;
+    snprintf(out, out_size, "UNKNOWN TIME");
+#if defined(_MSC_VER)
+    if (localtime_s(&tm_buf, &t) != 0) return;
+#elif defined(_WIN32) || defined(_WIN64)
+    {
+        struct tm *tm_ptr = localtime(&t);
+        if (!tm_ptr) return;
+        tm_buf = *tm_ptr;
+    }
+#else
+    if (!localtime_r(&t, &tm_buf)) return;
+#endif
+    if (strftime(out, out_size, "%Y-%m-%d %H:%M", &tm_buf) == 0) {
+        snprintf(out, out_size, "UNKNOWN TIME");
+    }
+}
+
+static bool player_read_full_save_info(const char *subpath, PlayerAutosaveInfo *info)
+{
+    char path[512];
+    FILE *f;
+    FullSaveHeader hdr;
+    AB3D_SAVE_STAT_BUF st;
+    int have_stat;
+
+    if (!info) return false;
+    memset(info, 0, sizeof(*info));
+    snprintf(info->timestamp, sizeof(info->timestamp), "UNKNOWN TIME");
+
+    io_make_exe_path(path, sizeof(path), subpath);
+    have_stat = (AB3D_SAVE_STAT(path, &st) == 0);
+    f = fopen(path, "rb");
+    if (!f) return false;
+
+    if (!player_save_read_exact(f, &hdr, sizeof(hdr))) {
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+
+    if (memcmp(hdr.magic, SAVE_MAGIC_FULL, 4) != 0 ||
+        hdr.version < 2u || hdr.version > SAVE_VERSION_FULL ||
+        hdr.current_level < 0 || hdr.current_level >= MAX_LEVELS) {
+        return false;
+    }
+
+    info->present = true;
+    info->level = hdr.current_level;
+    if (have_stat) {
+        player_save_format_timestamp(st.st_mtime, info->timestamp,
+                                     sizeof(info->timestamp));
+    }
+    return true;
 }
 
 static size_t player_save_table_size_with_sentinel(const uint8_t *table,
@@ -2389,7 +2459,8 @@ fail:
     return false;
 }
 
-void player_save_position(GameState *state)
+static void player_save_state_to_file(GameState *state, const char *subpath,
+                                      const char *save_label)
 {
     char path[512];
     FILE *f = NULL;
@@ -2406,17 +2477,22 @@ void player_save_position(GameState *state)
     size_t door_data_sz, switch_data_sz, lift_data_sz;
 
     if (!state) return;
+    if (!subpath || !*subpath) subpath = SAVE_FILE_SUBPATH;
+    if (!save_label || !*save_label) save_label = "save";
 
     if (state->level.data && state->level.data_byte_count == 0) {
-        printf("[PLAYER] save: level data size unknown; aborting save\n");
+        printf("[PLAYER] %s: level data size unknown; aborting save\n",
+               save_label);
         return;
     }
     if (state->level.graphics && state->level.graphics_byte_count == 0) {
-        printf("[PLAYER] save: level graphics size unknown; aborting save\n");
+        printf("[PLAYER] %s: level graphics size unknown; aborting save\n",
+               save_label);
         return;
     }
     if (state->level.clips && state->level.clips_byte_count == 0) {
-        printf("[PLAYER] save: level clips size unknown; aborting save\n");
+        printf("[PLAYER] %s: level clips size unknown; aborting save\n",
+               save_label);
         return;
     }
 
@@ -2424,15 +2500,18 @@ void player_save_position(GameState *state)
     switch_data_sz = player_save_table_size_with_sentinel(state->level.switch_data, 14u);
     lift_data_sz = player_save_table_size_with_sentinel(state->level.lift_data, 20u);
     if (state->level.door_data && door_data_sz == 0) {
-        printf("[PLAYER] save: door table missing terminator; aborting save\n");
+        printf("[PLAYER] %s: door table missing terminator; aborting save\n",
+               save_label);
         return;
     }
     if (state->level.switch_data && switch_data_sz == 0) {
-        printf("[PLAYER] save: switch table missing terminator; aborting save\n");
+        printf("[PLAYER] %s: switch table missing terminator; aborting save\n",
+               save_label);
         return;
     }
     if (state->level.lift_data && lift_data_sz == 0) {
-        printf("[PLAYER] save: lift table missing terminator; aborting save\n");
+        printf("[PLAYER] %s: lift table missing terminator; aborting save\n",
+               save_label);
         return;
     }
 
@@ -2451,7 +2530,8 @@ void player_save_position(GameState *state)
         !player_save_size_to_u32(player_save_lift_wall_list_size(&state->level), &lift_wall_list_bytes) ||
         !player_save_size_to_u32(player_save_lift_wall_offsets_size(&state->level), &lift_wall_offsets_bytes) ||
         !player_save_size_to_u32(player_save_workspace_size(&state->level), &workspace_bytes)) {
-        printf("[PLAYER] save: payload too large; aborting save\n");
+        printf("[PLAYER] %s: payload too large; aborting save\n",
+               save_label);
         return;
     }
 
@@ -2459,7 +2539,8 @@ void player_save_position(GameState *state)
         size_t count = (size_t)state->level.automap_seen_count;
         size_t bytes = count * sizeof(SaveAutomapSeenWallDisk);
         if (!player_save_size_to_u32(bytes, &automap_seen_bytes)) {
-            printf("[PLAYER] save: automap payload too large; aborting save\n");
+            printf("[PLAYER] %s: automap payload too large; aborting save\n",
+                   save_label);
             return;
         }
     }
@@ -2501,10 +2582,11 @@ void player_save_position(GameState *state)
     memcpy(hdr.bright_anim_values, state->level.bright_anim_values, sizeof(hdr.bright_anim_values));
     memcpy(hdr.bright_anim_indices, state->level.bright_anim_indices, sizeof(hdr.bright_anim_indices));
 
-    io_make_exe_path(path, sizeof(path), SAVE_FILE_SUBPATH);
+    io_make_exe_path(path, sizeof(path), subpath);
     f = fopen(path, "wb");
     if (!f) {
-        printf("[PLAYER] save: could not open %s for write\n", path);
+        printf("[PLAYER] %s: could not open %s for write\n",
+               save_label, path);
         return;
     }
 
@@ -2543,13 +2625,23 @@ void player_save_position(GameState *state)
     }
 
     fclose(f);
-    printf("[PLAYER] save: full game + level state (level %d) written to %s\n",
-           (int)state->current_level, path);
+    printf("[PLAYER] %s: full game + level state (level %d) written to %s\n",
+           save_label, (int)state->current_level, path);
     return;
 
 fail:
     fclose(f);
-    printf("[PLAYER] save: write failed\n");
+    printf("[PLAYER] %s: write failed\n", save_label);
+}
+
+void player_save_position(GameState *state)
+{
+    player_save_state_to_file(state, SAVE_FILE_SUBPATH, "save");
+}
+
+void player_save_autosave(GameState *state)
+{
+    player_save_state_to_file(state, AUTOSAVE_FILE_SUBPATH, "autosave");
 }
 
 static void player_sync_loaded_player(GameState *state, PlayerState *plr, int plr_num)
@@ -2675,21 +2767,25 @@ void player_apply_save_payload_after_level_load(GameState *state)
     player_seed_facing_and_snapshots(state);
 }
 
-PlayerSaveLoadResult player_load_save_from_file(GameState *state)
+static PlayerSaveLoadResult player_load_from_file(GameState *state,
+                                                  const char *subpath,
+                                                  const char *load_label)
 {
     char path[512];
     int16_t file_level = -1;
     bool has_level = false;
     char magic[4];
 
+    if (!subpath || !*subpath) subpath = SAVE_FILE_SUBPATH;
+    if (!load_label || !*load_label) load_label = "load";
     player_save_clear_pending_full_save();
-    io_make_exe_path(path, sizeof(path), SAVE_FILE_SUBPATH);
+    io_make_exe_path(path, sizeof(path), subpath);
     FILE *f = fopen(path, "rb");
     if (!f) return PLAYER_SAVE_LOAD_FAILED;
 
     if (fread(magic, 1, 4, f) != 4) {
         fclose(f);
-        printf("[PLAYER] load: read failed (truncated %s?)\n", path);
+        printf("[PLAYER] %s: read failed (truncated %s?)\n", load_label, path);
         return PLAYER_SAVE_LOAD_FAILED;
     }
 
@@ -2705,7 +2801,7 @@ PlayerSaveLoadResult player_load_save_from_file(GameState *state)
 
     if (memcmp(magic, SAVE_MAGIC_LEGACY, 4) != 0) {
         fclose(f);
-        printf("[PLAYER] load: invalid or missing magic in %s\n", path);
+        printf("[PLAYER] %s: invalid or missing magic in %s\n", load_label, path);
         return PLAYER_SAVE_LOAD_FAILED;
     }
     if (fread(&state->plr1.xoff, sizeof(state->plr1.xoff), 1, f) != 1) goto load_fail;
@@ -2726,20 +2822,36 @@ PlayerSaveLoadResult player_load_save_from_file(GameState *state)
     if (has_level && file_level >= 0 && file_level < MAX_LEVELS &&
         file_level != state->current_level) {
         state->current_level = file_level;
-        printf("[PLAYER] load: save is level %d; reloading level, then applying position\n",
-               (int)file_level);
+        printf("[PLAYER] %s: save is level %d; reloading level, then applying position\n",
+               load_label, (int)file_level);
         return PLAYER_SAVE_LOAD_NEED_LEVEL_RELOAD;
     }
 
     /* Same level, or old save without level tail: apply immediately */
     player_apply_save_payload_after_level_load(state);
-    printf("[PLAYER] load: position/orientation restored from %s\n", path);
+    printf("[PLAYER] %s: position/orientation restored from %s\n",
+           load_label, path);
     return PLAYER_SAVE_LOAD_APPLIED;
 
 load_fail:
     fclose(f);
-    printf("[PLAYER] load: read failed (truncated %s?)\n", path);
+    printf("[PLAYER] %s: read failed (truncated %s?)\n", load_label, path);
     return PLAYER_SAVE_LOAD_FAILED;
+}
+
+PlayerSaveLoadResult player_load_save_from_file(GameState *state)
+{
+    return player_load_from_file(state, SAVE_FILE_SUBPATH, "load");
+}
+
+PlayerSaveLoadResult player_load_autosave_from_file(GameState *state)
+{
+    return player_load_from_file(state, AUTOSAVE_FILE_SUBPATH, "autosave load");
+}
+
+bool player_read_autosave_info(PlayerAutosaveInfo *info)
+{
+    return player_read_full_save_info(AUTOSAVE_FILE_SUBPATH, info);
 }
 
 void player_init_from_level(GameState *state)

@@ -62,6 +62,7 @@ void display_ammo_bar(int16_t ammo);
 
 /* Text */
 void display_draw_line_of_text(const char *text, int line);
+void display_draw_line_of_text_alpha(const char *text, int line, int alpha);
 void display_clear_text_screen(void);
 
 #endif /* DISPLAY_H */
