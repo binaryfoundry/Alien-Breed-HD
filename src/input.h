@@ -54,9 +54,9 @@ bool input_key_pressed(const uint8_t *key_map, uint8_t keycode);
 /* Clear keyboard state */
 void input_clear_keyboard(uint8_t *key_map);
 
-/* F5 save current game state. Returns true once when F5 was pressed (caller should save). */
+/* F5 quicksave request. Returns true once when F5 was pressed. */
 bool input_f5_save_requested(void);
-/* F9 load savegame.bin (same file as F5). Returns true once when F9 was pressed. */
+/* F9 quickload request. Returns true once when F9 was pressed. */
 bool input_f9_load_requested(void);
 bool input_f6_gouraud_visualize_requested(void);
 bool input_f7_spill_visualize_requested(void);

@@ -465,9 +465,11 @@ void game_loop_tick(GameState *state, GameLoopCtx *ctx)
         }
 
         bool f2_pick_log_requested = input_f2_pick_log_requested();
-        if (input_f5_save_requested())
+        bool f5_save_requested = input_f5_save_requested();
+        bool f9_load_requested = input_f9_load_requested();
+        if (state->cfg_quicksave_load && f5_save_requested)
             player_save_position(state);
-        if (input_f9_load_requested()) {
+        if (state->cfg_quicksave_load && f9_load_requested) {
             switch (player_load_save_from_file(state)) {
             case PLAYER_SAVE_LOAD_APPLIED:
                 break;

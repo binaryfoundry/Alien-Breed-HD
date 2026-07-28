@@ -37,7 +37,7 @@ void player2_shoot(GameState *state);
 void player1_snapshot(GameState *state);
 void player2_snapshot(GameState *state);
 
-/* Save full game + level runtime state to savegame.bin beside the executable (F5). */
+/* Save full game + level runtime state to savegame.bin beside the executable. */
 void player_save_position(GameState *state);
 
 typedef enum {

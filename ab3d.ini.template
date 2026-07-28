@@ -14,6 +14,10 @@ infinite_health=0
 # 1 = weapons do not consume ammo.
 infinite_ammo=0
 
+# 1 = enable F5 quicksave and F9 quickload to/from savegame.bin.
+# 0 = ignore those shortcuts.
+quicksave_load=0
+
 # 1 = start with every weapon unlocked and full ammo (both players).
 all_weapons=0
 

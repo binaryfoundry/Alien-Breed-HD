@@ -251,6 +251,7 @@ typedef struct {
     bool            cfg_all_keys;       /* 1 = OR in key condition bits from level key objects (doors/lifts) */
     bool            cfg_mouse_look;     /* 1 = mouse Y shifts AB3D2-style view center in mouse+kbd mode */
     bool            cfg_mouse_look_invert_y; /* 1 = invert mouse-look Y direction */
+    bool            cfg_quicksave_load; /* 1 = enable PC F5 save / F9 load shortcut */
 
     /* ab3d.ini: display mode (-1=auto by build, 0=windowed, 1=desktop-sized window — same SDL flags as 0, no mode switch) */
     int8_t          cfg_display_mode;
