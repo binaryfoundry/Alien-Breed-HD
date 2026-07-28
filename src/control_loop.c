@@ -45,6 +45,7 @@
 
 static void control_game_over_fade_tick(float progress_0_to_1, void *userdata);
 static void control_level_complete_fade_tick(float progress_0_to_1, void *userdata);
+static bool s_autosave_next_level_start = false;
 
 /* -----------------------------------------------------------------------
  * Password system
@@ -585,9 +586,11 @@ void play_the_game_prepare_level(GameState *state, bool *copper_screen_ready)
 
     game_rebuild_level_conditions(state);
 
-    if (!applying_pending_save && state->mode == MODE_SINGLE) {
+    if (s_autosave_next_level_start && !applying_pending_save &&
+        state->mode == MODE_SINGLE) {
         player_save_autosave(state);
     }
+    s_autosave_next_level_start = false;
 
     printf("[GAME] Entering main loop...\n");
 }
@@ -735,6 +738,7 @@ static void control_setup_new_game_state(GameState *state)
     state->current_level = 0;
     state->max_level = 16;
     state->finished_level = 0;
+    s_autosave_next_level_start = false;
     state->nasty = true;
     state->plr1.angpos = 0;
     state->plr2.angpos = 0;
@@ -811,6 +815,7 @@ int play_game_outer_should_continue(GameState *state)
     printf("[MUSIC] outcome: well done\n");
 
     state->current_level++;
+    s_autosave_next_level_start = true;
     printf("[CONTROL] Loading next level %d (player state preserved)\n",
            (int)state->current_level);
     return 1;
@@ -936,10 +941,12 @@ int play_game_outer_emscripten_finish(GameState *state)
         /* Web build: after level 4 (1-indexed), loop to the first level instead of continuing. */
         if (state->current_level == 3) {
             state->current_level = 0;
+            s_autosave_next_level_start = true;
             printf("[CONTROL] Web: after level 4, looping to level 0 (player state preserved)\n");
             return 1;
         }
         state->current_level++;
+        s_autosave_next_level_start = true;
         printf("[CONTROL] Loading next level %d (player state preserved)\n",
                (int)state->current_level);
         return 1;
