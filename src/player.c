@@ -1852,9 +1852,21 @@ void player2_control(GameState *state)
 #define SAVE_VERSION_FULL 7u
 #define SAVE_FILE_SUBPATH "savegame.bin"
 #define AUTOSAVE_FILE_SUBPATH "autosave.bin"
+#define AUTOSAVE_FILE_SUBPATH_1 "autosave1.bin"
+#define AUTOSAVE_FILE_SUBPATH_2 "autosave2.bin"
+#define AUTOSAVE_FILE_SUBPATH_3 "autosave3.bin"
+#define AUTOSAVE_FILE_SUBPATH_4 "autosave4.bin"
 #define SAVE_MAX_TABLE_ENTRIES 4096
 #define SAVE_MAX_CHUNK_BYTES (256u * 1024u * 1024u)
 #define SAVE_NASTY_SLOT_SCRATCH_BYTES 64u
+
+static const char *const player_autosave_slot_subpaths[PLAYER_AUTOSAVE_SLOT_COUNT] = {
+    AUTOSAVE_FILE_SUBPATH,
+    AUTOSAVE_FILE_SUBPATH_1,
+    AUTOSAVE_FILE_SUBPATH_2,
+    AUTOSAVE_FILE_SUBPATH_3,
+    AUTOSAVE_FILE_SUBPATH_4
+};
 
 typedef struct {
     char     magic[4];
@@ -1951,6 +1963,22 @@ static bool player_save_read_exact(FILE *f, void *data, size_t bytes)
     return f && data && fread(data, 1, bytes, f) == bytes;
 }
 
+static const char *player_autosave_subpath_for_slot(int slot)
+{
+    if (slot < 0 || slot >= PLAYER_AUTOSAVE_SLOT_COUNT) return NULL;
+    return player_autosave_slot_subpaths[slot];
+}
+
+static int player_autosave_slot_for_subpath(const char *subpath)
+{
+    if (!subpath || !*subpath) return -1;
+    for (int i = 0; i < PLAYER_AUTOSAVE_SLOT_COUNT; i++) {
+        if (strcmp(subpath, player_autosave_slot_subpaths[i]) == 0)
+            return i;
+    }
+    return -1;
+}
+
 static void player_save_format_timestamp(time_t t, char *out, size_t out_size)
 {
     struct tm tm_buf;
@@ -1973,10 +2001,11 @@ static void player_save_format_timestamp(time_t t, char *out, size_t out_size)
 }
 
 #if defined(__EMSCRIPTEN__)
-#define PLAYER_WEB_AUTOSAVE_STORAGE_KEY "ab3d1.autosave.v1"
+#define PLAYER_WEB_AUTOSAVE_STORAGE_PREFIX "ab3d1.autosave.v1.slot"
+#define PLAYER_WEB_AUTOSAVE_LEGACY_STORAGE_KEY "ab3d1.autosave.v1"
 
-static bool g_web_autosave_restored = false;
-static bool g_web_autosave_storage_stale = false;
+static bool g_web_autosave_restored[PLAYER_AUTOSAVE_SLOT_COUNT];
+static bool g_web_autosave_storage_stale[PLAYER_AUTOSAVE_SLOT_COUNT];
 
 EM_JS(int, player_web_local_storage_set_bytes,
       (const char *key_ptr, const uint8_t *data_ptr, int length), {
@@ -2046,9 +2075,74 @@ EM_JS(double, player_web_local_storage_get_mtime_ms, (const char *key_ptr), {
     }
 });
 
-static bool player_web_is_autosave_subpath(const char *subpath)
+EM_JS(void, player_web_local_storage_rotate_autosaves,
+      (const char *prefix_ptr, int count, const char *legacy_key_ptr), {
+    var prefix = UTF8ToString(prefix_ptr);
+    var legacyKey = UTF8ToString(legacy_key_ptr);
+    try {
+        if (typeof localStorage === 'undefined') return;
+
+        function hasSlot(key) {
+            return localStorage.getItem(key + '.data') !== null;
+        }
+        function removeSlot(key) {
+            localStorage.removeItem(key + '.data');
+            localStorage.removeItem(key + '.mtime_ms');
+        }
+        function copySlot(src, dst) {
+            var data = localStorage.getItem(src + '.data');
+            var mtime = localStorage.getItem(src + '.mtime_ms');
+            if (data === null) {
+                removeSlot(dst);
+                return;
+            }
+            localStorage.setItem(dst + '.data', data);
+            if (mtime === null) {
+                localStorage.removeItem(dst + '.mtime_ms');
+            } else {
+                localStorage.setItem(dst + '.mtime_ms', mtime);
+            }
+        }
+
+        if (!hasSlot(prefix + '0') && hasSlot(legacyKey)) {
+            copySlot(legacyKey, prefix + '0');
+        }
+        for (var i = count - 1; i > 0; i--) {
+            copySlot(prefix + String(i - 1), prefix + String(i));
+        }
+        removeSlot(prefix + '0');
+        removeSlot(legacyKey);
+    } catch (e) {
+        console.warn('[PLAYER] autosave localStorage rotation failed', e);
+    }
+});
+
+static void player_web_autosave_key_for_slot(int slot, char *out, size_t out_size)
 {
-    return subpath && strcmp(subpath, AUTOSAVE_FILE_SUBPATH) == 0;
+    if (!out || out_size == 0) return;
+    snprintf(out, out_size, "%s%d", PLAYER_WEB_AUTOSAVE_STORAGE_PREFIX, slot);
+}
+
+static bool player_web_autosave_storage_key_for_read(int slot,
+                                                     char *out,
+                                                     size_t out_size)
+{
+    if (!out || out_size == 0 ||
+        slot < 0 || slot >= PLAYER_AUTOSAVE_SLOT_COUNT) {
+        return false;
+    }
+
+    player_web_autosave_key_for_slot(slot, out, out_size);
+    if (player_web_local_storage_get_size(out) > 0)
+        return true;
+
+    if (slot == 0) {
+        snprintf(out, out_size, "%s", PLAYER_WEB_AUTOSAVE_LEGACY_STORAGE_KEY);
+        if (player_web_local_storage_get_size(out) > 0)
+            return true;
+    }
+
+    return false;
 }
 
 static bool player_web_read_file_bytes(const char *path,
@@ -2095,25 +2189,27 @@ static bool player_web_persist_autosave_file(const char *subpath,
                                              const char *path,
                                              const char *save_label)
 {
+    int slot = player_autosave_slot_for_subpath(subpath);
+    char key[80];
     uint8_t *data = NULL;
     size_t size = 0;
     bool ok;
 
-    if (!player_web_is_autosave_subpath(subpath)) return true;
+    if (slot < 0) return true;
     if (!player_web_read_file_bytes(path, &data, &size)) {
-        g_web_autosave_storage_stale = true;
+        g_web_autosave_storage_stale[slot] = true;
         return false;
     }
     if (size > INT_MAX) {
         free(data);
-        g_web_autosave_storage_stale = true;
+        g_web_autosave_storage_stale[slot] = true;
         return false;
     }
 
-    ok = player_web_local_storage_set_bytes(PLAYER_WEB_AUTOSAVE_STORAGE_KEY,
-                                            data, (int)size) != 0;
+    player_web_autosave_key_for_slot(slot, key, sizeof(key));
+    ok = player_web_local_storage_set_bytes(key, data, (int)size) != 0;
     free(data);
-    g_web_autosave_storage_stale = !ok;
+    g_web_autosave_storage_stale[slot] = !ok;
     if (!ok) {
         printf("[PLAYER] %s: browser localStorage persistence failed\n",
                save_label ? save_label : "autosave");
@@ -2124,21 +2220,24 @@ static bool player_web_persist_autosave_file(const char *subpath,
 static void player_web_restore_autosave_if_needed(const char *subpath,
                                                   const char *path)
 {
+    int slot = player_autosave_slot_for_subpath(subpath);
+    char key[80];
     int size;
     uint8_t *data;
     FILE *f;
 
-    if (!player_web_is_autosave_subpath(subpath) || g_web_autosave_restored)
+    if (slot < 0 || g_web_autosave_restored[slot])
         return;
-    g_web_autosave_restored = true;
+    g_web_autosave_restored[slot] = true;
 
-    size = player_web_local_storage_get_size(PLAYER_WEB_AUTOSAVE_STORAGE_KEY);
+    if (!player_web_autosave_storage_key_for_read(slot, key, sizeof(key)))
+        return;
+    size = player_web_local_storage_get_size(key);
     if (size <= 0 || size > INT_MAX) return;
 
     data = (uint8_t *)malloc((size_t)size);
     if (!data) return;
-    if (player_web_local_storage_get_bytes(PLAYER_WEB_AUTOSAVE_STORAGE_KEY,
-                                           data, size) != size) {
+    if (player_web_local_storage_get_bytes(key, data, size) != size) {
         free(data);
         return;
     }
@@ -2149,24 +2248,42 @@ static void player_web_restore_autosave_if_needed(const char *subpath,
         return;
     }
     if (fwrite(data, 1, (size_t)size, f) == (size_t)size) {
-        g_web_autosave_storage_stale = false;
+        g_web_autosave_storage_stale[slot] = false;
         printf("[PLAYER] autosave: restored browser localStorage copy\n");
     }
     fclose(f);
     free(data);
 }
 
-static bool player_web_read_autosave_timestamp(char *out, size_t out_size)
+static bool player_web_read_autosave_timestamp(int slot, char *out, size_t out_size)
 {
+    char key[80];
     double mtime_ms;
     time_t t;
 
-    if (!out || out_size == 0 || g_web_autosave_storage_stale) return false;
-    mtime_ms = player_web_local_storage_get_mtime_ms(PLAYER_WEB_AUTOSAVE_STORAGE_KEY);
+    if (!out || out_size == 0 ||
+        slot < 0 || slot >= PLAYER_AUTOSAVE_SLOT_COUNT ||
+        g_web_autosave_storage_stale[slot]) {
+        return false;
+    }
+    if (!player_web_autosave_storage_key_for_read(slot, key, sizeof(key)))
+        return false;
+
+    mtime_ms = player_web_local_storage_get_mtime_ms(key);
     if (mtime_ms <= 0.0) return false;
     t = (time_t)(mtime_ms / 1000.0);
     player_save_format_timestamp(t, out, out_size);
     return true;
+}
+
+static void player_web_rotate_autosave_storage(void)
+{
+    player_web_local_storage_rotate_autosaves(
+        PLAYER_WEB_AUTOSAVE_STORAGE_PREFIX,
+        PLAYER_AUTOSAVE_SLOT_COUNT,
+        PLAYER_WEB_AUTOSAVE_LEGACY_STORAGE_KEY);
+    memset(g_web_autosave_restored, 0, sizeof(g_web_autosave_restored));
+    memset(g_web_autosave_storage_stale, 0, sizeof(g_web_autosave_storage_stale));
 }
 #endif
 
@@ -2177,6 +2294,9 @@ static bool player_read_full_save_info(const char *subpath, PlayerAutosaveInfo *
     FullSaveHeader hdr;
     AB3D_SAVE_STAT_BUF st;
     int have_stat;
+#if defined(__EMSCRIPTEN__)
+    int autosave_slot = player_autosave_slot_for_subpath(subpath);
+#endif
 
     if (!info) return false;
     memset(info, 0, sizeof(*info));
@@ -2205,8 +2325,9 @@ static bool player_read_full_save_info(const char *subpath, PlayerAutosaveInfo *
     info->present = true;
     info->level = hdr.current_level;
 #if defined(__EMSCRIPTEN__)
-    if (player_web_is_autosave_subpath(subpath) &&
-        player_web_read_autosave_timestamp(info->timestamp,
+    if (autosave_slot >= 0 &&
+        player_web_read_autosave_timestamp(autosave_slot,
+                                           info->timestamp,
                                            sizeof(info->timestamp))) {
         return true;
     }
@@ -2857,8 +2978,28 @@ void player_save_position(GameState *state)
     player_save_state_to_file(state, SAVE_FILE_SUBPATH, "save");
 }
 
+static void player_rotate_autosave_slots(void)
+{
+#if defined(__EMSCRIPTEN__)
+    player_web_rotate_autosave_storage();
+#endif
+    for (int slot = PLAYER_AUTOSAVE_SLOT_COUNT - 1; slot > 0; slot--) {
+        char src[512];
+        char dst[512];
+        const char *src_subpath = player_autosave_subpath_for_slot(slot - 1);
+        const char *dst_subpath = player_autosave_subpath_for_slot(slot);
+        if (!src_subpath || !dst_subpath) continue;
+        io_make_exe_path(src, sizeof(src), src_subpath);
+        io_make_exe_path(dst, sizeof(dst), dst_subpath);
+        remove(dst);
+        rename(src, dst);
+    }
+}
+
 void player_save_autosave(GameState *state)
 {
+    if (!state) return;
+    player_rotate_autosave_slots();
     player_save_state_to_file(state, AUTOSAVE_FILE_SUBPATH, "autosave");
 }
 
@@ -3065,14 +3206,20 @@ PlayerSaveLoadResult player_load_save_from_file(GameState *state)
     return player_load_from_file(state, SAVE_FILE_SUBPATH, "load");
 }
 
-PlayerSaveLoadResult player_load_autosave_from_file(GameState *state)
+PlayerSaveLoadResult player_load_autosave_from_file(GameState *state, int slot)
 {
-    return player_load_from_file(state, AUTOSAVE_FILE_SUBPATH, "autosave load");
+    char label[32];
+    const char *subpath = player_autosave_subpath_for_slot(slot);
+    if (!subpath) return PLAYER_SAVE_LOAD_FAILED;
+    snprintf(label, sizeof(label), "autosave %d load", slot + 1);
+    return player_load_from_file(state, subpath, label);
 }
 
-bool player_read_autosave_info(PlayerAutosaveInfo *info)
+bool player_read_autosave_info(int slot, PlayerAutosaveInfo *info)
 {
-    return player_read_full_save_info(AUTOSAVE_FILE_SUBPATH, info);
+    const char *subpath = player_autosave_subpath_for_slot(slot);
+    if (!subpath) return false;
+    return player_read_full_save_info(subpath, info);
 }
 
 void player_init_from_level(GameState *state)

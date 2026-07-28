@@ -40,6 +40,8 @@ void player2_snapshot(GameState *state);
 /* Save full game + level runtime state to savegame.bin beside the executable. */
 void player_save_position(GameState *state);
 
+#define PLAYER_AUTOSAVE_SLOT_COUNT 5
+
 typedef enum {
     PLAYER_SAVE_LOAD_FAILED = 0,
     PLAYER_SAVE_LOAD_APPLIED,
@@ -55,10 +57,10 @@ typedef struct {
 /* Read savegame.bin. Full saves stage a pending restore and request level reload. */
 PlayerSaveLoadResult player_load_save_from_file(GameState *state);
 
-/* Autosave is separate from F5/F9 quicksave and uses autosave.bin. */
+/* Autosave is separate from F5/F9 quicksave; slot 0 uses autosave.bin. */
 void player_save_autosave(GameState *state);
-PlayerSaveLoadResult player_load_autosave_from_file(GameState *state);
-bool player_read_autosave_info(PlayerAutosaveInfo *info);
+PlayerSaveLoadResult player_load_autosave_from_file(GameState *state, int slot);
+bool player_read_autosave_info(int slot, PlayerAutosaveInfo *info);
 
 /* After level reload, apply the pending full restore (or legacy position payload). */
 void player_apply_save_payload_after_level_load(GameState *state);

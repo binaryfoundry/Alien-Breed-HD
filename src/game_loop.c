@@ -44,15 +44,18 @@
 
 #define INGAME_MENU_SCREEN_MAIN     0
 #define INGAME_MENU_SCREEN_NEW_GAME 1
-#define INGAME_MENU_SCREEN_LOAD_AUTOSAVE 2
+#define INGAME_MENU_SCREEN_AUTOSAVES 2
+#define INGAME_MENU_SCREEN_LOAD_AUTOSAVE 3
 
 #define INGAME_MENU_CONTINUE    0
-#define INGAME_MENU_LOAD_AUTOSAVE 1
+#define INGAME_MENU_AUTOSAVES   1
 #define INGAME_MENU_NEW_GAME    2
 #define INGAME_MENU_MOUSE_LOOK  3
 #define INGAME_MENU_FPS_COUNTER 4
 #define INGAME_MENU_EXIT        5
 #define INGAME_MENU_COUNT       6
+
+#define INGAME_MENU_AUTOSAVE_BACK PLAYER_AUTOSAVE_SLOT_COUNT
 
 #define INGAME_MENU_CONFIRM_YES   0
 #define INGAME_MENU_CONFIRM_NO    1
@@ -255,25 +258,29 @@ static void game_loop_clear_queued_actions(void)
 
 static void game_loop_refresh_autosave_info(GameLoopCtx *ctx)
 {
-    PlayerAutosaveInfo info;
     if (!ctx) return;
-    memset(&info, 0, sizeof(info));
-    ctx->ingame_menu_autosave_available = 0;
-    ctx->ingame_menu_autosave_level = -1;
-    ctx->ingame_menu_autosave_timestamp[0] = '\0';
-    if (player_read_autosave_info(&info)) {
-        ctx->ingame_menu_autosave_available = 1;
-        ctx->ingame_menu_autosave_level = info.level;
-        snprintf(ctx->ingame_menu_autosave_timestamp,
-                 sizeof(ctx->ingame_menu_autosave_timestamp), "%s",
-                 info.timestamp);
+    ctx->ingame_menu_autosave_count = 0;
+    for (int slot = 0; slot < PLAYER_AUTOSAVE_SLOT_COUNT; slot++) {
+        PlayerAutosaveInfo info;
+        memset(&info, 0, sizeof(info));
+        ctx->ingame_menu_autosave_available[slot] = 0;
+        ctx->ingame_menu_autosave_level[slot] = -1;
+        ctx->ingame_menu_autosave_timestamp[slot][0] = '\0';
+        if (player_read_autosave_info(slot, &info)) {
+            ctx->ingame_menu_autosave_available[slot] = 1;
+            ctx->ingame_menu_autosave_level[slot] = info.level;
+            snprintf(ctx->ingame_menu_autosave_timestamp[slot],
+                     sizeof(ctx->ingame_menu_autosave_timestamp[slot]), "%s",
+                     info.timestamp);
+            ctx->ingame_menu_autosave_count++;
+        }
     }
 }
 
 static int game_loop_main_menu_item_enabled(const GameLoopCtx *ctx, int item)
 {
-    if (item == INGAME_MENU_LOAD_AUTOSAVE) {
-        return ctx && ctx->ingame_menu_autosave_available;
+    if (item == INGAME_MENU_AUTOSAVES) {
+        return ctx && ctx->ingame_menu_autosave_count > 0;
     }
     return 1;
 }
@@ -302,6 +309,44 @@ static void game_loop_move_main_menu_selection(GameLoopCtx *ctx, int step)
     }
 }
 
+static int game_loop_autosave_menu_item_enabled(const GameLoopCtx *ctx, int item)
+{
+    if (item == INGAME_MENU_AUTOSAVE_BACK) return 1;
+    if (!ctx || item < 0 || item >= PLAYER_AUTOSAVE_SLOT_COUNT) return 0;
+    return ctx->ingame_menu_autosave_available[item];
+}
+
+static void game_loop_set_autosave_menu_selection(GameLoopCtx *ctx, int preferred)
+{
+    if (!ctx) return;
+    if (game_loop_autosave_menu_item_enabled(ctx, preferred)) {
+        ctx->ingame_menu_selected = preferred;
+        return;
+    }
+    for (int slot = 0; slot < PLAYER_AUTOSAVE_SLOT_COUNT; slot++) {
+        if (game_loop_autosave_menu_item_enabled(ctx, slot)) {
+            ctx->ingame_menu_selected = slot;
+            return;
+        }
+    }
+    ctx->ingame_menu_selected = INGAME_MENU_AUTOSAVE_BACK;
+}
+
+static void game_loop_move_autosave_menu_selection(GameLoopCtx *ctx, int step)
+{
+    int item_count = PLAYER_AUTOSAVE_SLOT_COUNT + 1;
+    int selected;
+    if (!ctx || step == 0) return;
+    selected = ctx->ingame_menu_selected;
+    for (int i = 0; i < item_count; i++) {
+        selected = (selected + step + item_count) % item_count;
+        if (game_loop_autosave_menu_item_enabled(ctx, selected)) {
+            ctx->ingame_menu_selected = selected;
+            return;
+        }
+    }
+}
+
 static void game_loop_draw_ingame_menu(GameState *state, const GameLoopCtx *ctx)
 {
     char line[80];
@@ -310,13 +355,41 @@ static void game_loop_draw_ingame_menu(GameState *state, const GameLoopCtx *ctx)
     display_draw_line_of_text("ALIEN BREED 3D I", 0);
     display_draw_line_of_text(" ", 1);
 
+    if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_AUTOSAVES) {
+        display_draw_line_of_text("AUTOSAVES", 1);
+        for (int slot = 0; slot < PLAYER_AUTOSAVE_SLOT_COUNT; slot++) {
+            int row = 2 + slot;
+            if (ctx->ingame_menu_autosave_available[slot]) {
+                snprintf(line, sizeof(line), "%c %d  LEVEL %d  %s",
+                         (ctx->ingame_menu_selected == slot) ? '>' : ' ',
+                         slot + 1,
+                         (int)ctx->ingame_menu_autosave_level[slot] + 1,
+                         ctx->ingame_menu_autosave_timestamp[slot]);
+                display_draw_line_of_text(line, row);
+            } else {
+                snprintf(line, sizeof(line), "  %d  EMPTY", slot + 1);
+                display_draw_line_of_text_alpha(line, row,
+                                                INGAME_MENU_DISABLED_ALPHA);
+            }
+        }
+        display_draw_line_of_text(
+            (ctx->ingame_menu_selected == INGAME_MENU_AUTOSAVE_BACK) ?
+            "> BACK" : "  BACK", 7);
+        display_set_screen_tint(0, 0, 0, INGAME_MENU_DIM_ALPHA);
+        display_present_last_frame(state);
+        display_clear_screen_tint();
+        return;
+    }
+
     if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_NEW_GAME ||
         ctx->ingame_menu_screen == INGAME_MENU_SCREEN_LOAD_AUTOSAVE) {
         if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_LOAD_AUTOSAVE) {
-            if (ctx->ingame_menu_autosave_available) {
-                snprintf(line, sizeof(line), "LOAD AUTOSAVE  LEVEL %d  %s",
-                         (int)ctx->ingame_menu_autosave_level + 1,
-                         ctx->ingame_menu_autosave_timestamp);
+            int slot = ctx->ingame_menu_autosave_selected_slot;
+            if (game_loop_autosave_menu_item_enabled(ctx, slot)) {
+                snprintf(line, sizeof(line), "LOAD AUTOSAVE %d  LEVEL %d  %s",
+                         slot + 1,
+                         (int)ctx->ingame_menu_autosave_level[slot] + 1,
+                         ctx->ingame_menu_autosave_timestamp[slot]);
                 display_draw_line_of_text(line, 3);
             } else {
                 display_draw_line_of_text_alpha("LOAD AUTOSAVE  NO AUTOSAVE", 3,
@@ -341,15 +414,13 @@ static void game_loop_draw_ingame_menu(GameState *state, const GameLoopCtx *ctx)
     display_draw_line_of_text((ctx->ingame_menu_selected == INGAME_MENU_CONTINUE) ?
                               "> CONTINUE" : "  CONTINUE", 2);
 
-    if (ctx->ingame_menu_autosave_available) {
-        snprintf(line, sizeof(line), "%c LOAD AUTOSAVE  LEVEL %d  %s",
-                 (ctx->ingame_menu_selected == INGAME_MENU_LOAD_AUTOSAVE) ?
-                 '>' : ' ',
-                 (int)ctx->ingame_menu_autosave_level + 1,
-                 ctx->ingame_menu_autosave_timestamp);
+    if (ctx->ingame_menu_autosave_count > 0) {
+        snprintf(line, sizeof(line), "%c AUTOSAVES",
+                 (ctx->ingame_menu_selected == INGAME_MENU_AUTOSAVES) ?
+                 '>' : ' ');
         display_draw_line_of_text(line, 3);
     } else {
-        display_draw_line_of_text_alpha("  LOAD AUTOSAVE  NO AUTOSAVE", 3,
+        display_draw_line_of_text_alpha("  AUTOSAVES  NONE", 3,
                                         INGAME_MENU_DISABLED_ALPHA);
     }
 
@@ -384,6 +455,17 @@ static void game_loop_return_to_ingame_main_menu(GameState *state, GameLoopCtx *
     game_loop_draw_ingame_menu(state, ctx);
 }
 
+static void game_loop_return_to_autosaves_menu(GameState *state, GameLoopCtx *ctx,
+                                               int preferred_slot)
+{
+    ctx->ingame_menu_screen = INGAME_MENU_SCREEN_AUTOSAVES;
+    game_loop_refresh_autosave_info(ctx);
+    game_loop_set_autosave_menu_selection(ctx, preferred_slot);
+    input_clear_keyboard(state->key_map);
+    game_loop_pause_timing(state, ctx);
+    game_loop_draw_ingame_menu(state, ctx);
+}
+
 static void game_loop_close_ingame_menu(GameState *state, GameLoopCtx *ctx)
 {
     ctx->ingame_menu_open = 0;
@@ -398,6 +480,7 @@ static void game_loop_open_ingame_menu(GameState *state, GameLoopCtx *ctx)
     ctx->ingame_menu_open = 1;
     ctx->ingame_menu_screen = INGAME_MENU_SCREEN_MAIN;
     game_loop_refresh_autosave_info(ctx);
+    ctx->ingame_menu_autosave_selected_slot = 0;
     game_loop_set_main_menu_selection(ctx, INGAME_MENU_CONTINUE);
     input_clear_keyboard(state->key_map);
     game_loop_clear_queued_actions();
@@ -407,13 +490,13 @@ static void game_loop_open_ingame_menu(GameState *state, GameLoopCtx *ctx)
 
 static void game_loop_load_autosave(GameState *state, GameLoopCtx *ctx)
 {
-    if (!ctx->ingame_menu_autosave_available) {
-        game_loop_return_to_ingame_main_menu(state, ctx,
-                                            INGAME_MENU_LOAD_AUTOSAVE);
+    int slot = ctx->ingame_menu_autosave_selected_slot;
+    if (!game_loop_autosave_menu_item_enabled(ctx, slot)) {
+        game_loop_return_to_autosaves_menu(state, ctx, slot);
         return;
     }
 
-    switch (player_load_autosave_from_file(state)) {
+    switch (player_load_autosave_from_file(state, slot)) {
     case PLAYER_SAVE_LOAD_APPLIED:
         game_loop_close_ingame_menu(state, ctx);
         return;
@@ -427,9 +510,8 @@ static void game_loop_load_autosave(GameState *state, GameLoopCtx *ctx)
 
     case PLAYER_SAVE_LOAD_FAILED:
     default:
-        printf("[PLAYER] autosave load: no autosave.bin or load failed\n");
-        game_loop_return_to_ingame_main_menu(state, ctx,
-                                            INGAME_MENU_LOAD_AUTOSAVE);
+        printf("[PLAYER] autosave load: slot %d load failed\n", slot + 1);
+        game_loop_return_to_autosaves_menu(state, ctx, slot);
         return;
     }
 }
@@ -451,10 +533,13 @@ static void game_loop_select_confirm_item(GameState *state, GameLoopCtx *ctx)
 
     case INGAME_MENU_CONFIRM_NO:
     default:
-        game_loop_return_to_ingame_main_menu(
-            state, ctx,
-            (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_LOAD_AUTOSAVE) ?
-            INGAME_MENU_LOAD_AUTOSAVE : INGAME_MENU_NEW_GAME);
+        if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_LOAD_AUTOSAVE) {
+            game_loop_return_to_autosaves_menu(
+                state, ctx, ctx->ingame_menu_autosave_selected_slot);
+        } else {
+            game_loop_return_to_ingame_main_menu(
+                state, ctx, INGAME_MENU_NEW_GAME);
+        }
         return;
     }
 }
@@ -466,18 +551,35 @@ static void game_loop_select_ingame_menu_item(GameState *state, GameLoopCtx *ctx
         game_loop_select_confirm_item(state, ctx);
         return;
     }
+    if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_AUTOSAVES) {
+        if (ctx->ingame_menu_selected == INGAME_MENU_AUTOSAVE_BACK) {
+            game_loop_return_to_ingame_main_menu(state, ctx,
+                                                INGAME_MENU_AUTOSAVES);
+            return;
+        }
+        if (game_loop_autosave_menu_item_enabled(ctx,
+                                                 ctx->ingame_menu_selected)) {
+            ctx->ingame_menu_autosave_selected_slot =
+                ctx->ingame_menu_selected;
+            ctx->ingame_menu_screen = INGAME_MENU_SCREEN_LOAD_AUTOSAVE;
+            ctx->ingame_menu_selected = INGAME_MENU_CONFIRM_NO;
+        }
+        game_loop_pause_timing(state, ctx);
+        game_loop_draw_ingame_menu(state, ctx);
+        return;
+    }
 
     switch (ctx->ingame_menu_selected) {
     case INGAME_MENU_CONTINUE:
         game_loop_close_ingame_menu(state, ctx);
         return;
 
-    case INGAME_MENU_LOAD_AUTOSAVE:
-        if (!ctx->ingame_menu_autosave_available) {
+    case INGAME_MENU_AUTOSAVES:
+        if (ctx->ingame_menu_autosave_count <= 0) {
             break;
         }
-        ctx->ingame_menu_screen = INGAME_MENU_SCREEN_LOAD_AUTOSAVE;
-        ctx->ingame_menu_selected = INGAME_MENU_CONFIRM_NO;
+        ctx->ingame_menu_screen = INGAME_MENU_SCREEN_AUTOSAVES;
+        game_loop_set_autosave_menu_selection(ctx, 0);
         break;
 
     case INGAME_MENU_NEW_GAME:
@@ -515,12 +617,15 @@ static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
 {
     if (input_consume_key_press(KEY_ESC)) {
         game_loop_clear_queued_actions();
-        if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_NEW_GAME ||
-            ctx->ingame_menu_screen == INGAME_MENU_SCREEN_LOAD_AUTOSAVE) {
-            game_loop_return_to_ingame_main_menu(
-                state, ctx,
-                (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_LOAD_AUTOSAVE) ?
-                INGAME_MENU_LOAD_AUTOSAVE : INGAME_MENU_NEW_GAME);
+        if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_LOAD_AUTOSAVE) {
+            game_loop_return_to_autosaves_menu(
+                state, ctx, ctx->ingame_menu_autosave_selected_slot);
+        } else if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_AUTOSAVES) {
+            game_loop_return_to_ingame_main_menu(state, ctx,
+                                                INGAME_MENU_AUTOSAVES);
+        } else if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_NEW_GAME) {
+            game_loop_return_to_ingame_main_menu(state, ctx,
+                                                INGAME_MENU_NEW_GAME);
         } else {
             game_loop_close_ingame_menu(state, ctx);
         }
@@ -528,12 +633,15 @@ static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
     }
     if (input_key_pressed(state->key_map, KEY_ESC)) {
         game_loop_clear_queued_actions();
-        if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_NEW_GAME ||
-            ctx->ingame_menu_screen == INGAME_MENU_SCREEN_LOAD_AUTOSAVE) {
-            game_loop_return_to_ingame_main_menu(
-                state, ctx,
-                (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_LOAD_AUTOSAVE) ?
-                INGAME_MENU_LOAD_AUTOSAVE : INGAME_MENU_NEW_GAME);
+        if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_LOAD_AUTOSAVE) {
+            game_loop_return_to_autosaves_menu(
+                state, ctx, ctx->ingame_menu_autosave_selected_slot);
+        } else if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_AUTOSAVES) {
+            game_loop_return_to_ingame_main_menu(state, ctx,
+                                                INGAME_MENU_AUTOSAVES);
+        } else if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_NEW_GAME) {
+            game_loop_return_to_ingame_main_menu(state, ctx,
+                                                INGAME_MENU_NEW_GAME);
         } else {
             display_clear_text_screen();
             input_clear_keyboard(state->key_map);
@@ -548,6 +656,9 @@ static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
     if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_MAIN) {
         if (menu_up) game_loop_move_main_menu_selection(ctx, -1);
         if (menu_down) game_loop_move_main_menu_selection(ctx, 1);
+    } else if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_AUTOSAVES) {
+        if (menu_up) game_loop_move_autosave_menu_selection(ctx, -1);
+        if (menu_down) game_loop_move_autosave_menu_selection(ctx, 1);
     } else {
         if (menu_up) {
             ctx->ingame_menu_selected =
