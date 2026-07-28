@@ -20,7 +20,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <time.h>
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#endif
 #if defined(_WIN32) || defined(_WIN64)
 #include <sys/stat.h>
 #define AB3D_SAVE_STAT(path, st) _stat((path), (st))
@@ -1968,6 +1972,204 @@ static void player_save_format_timestamp(time_t t, char *out, size_t out_size)
     }
 }
 
+#if defined(__EMSCRIPTEN__)
+#define PLAYER_WEB_AUTOSAVE_STORAGE_KEY "ab3d1.autosave.v1"
+
+static bool g_web_autosave_restored = false;
+static bool g_web_autosave_storage_stale = false;
+
+EM_JS(int, player_web_local_storage_set_bytes,
+      (const char *key_ptr, const uint8_t *data_ptr, int length), {
+    var key = UTF8ToString(key_ptr);
+    try {
+        if (typeof localStorage === 'undefined') return 0;
+        var bytes = HEAPU8.subarray(data_ptr, data_ptr + length);
+        var binary = "";
+        var chunkSize = 0x8000;
+        for (var i = 0; i < bytes.length; i += chunkSize) {
+            var chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+            var chars = new Array(chunk.length);
+            for (var j = 0; j < chunk.length; j++) {
+                chars[j] = String.fromCharCode(chunk[j]);
+            }
+            binary += chars.join("");
+        }
+        localStorage.setItem(key + '.data', btoa(binary));
+        localStorage.setItem(key + '.mtime_ms', String(Date.now()));
+        return 1;
+    } catch (e) {
+        console.warn('[PLAYER] autosave localStorage write failed', e);
+        return 0;
+    }
+});
+
+EM_JS(int, player_web_local_storage_get_size, (const char *key_ptr), {
+    var key = UTF8ToString(key_ptr);
+    try {
+        if (typeof localStorage === 'undefined') return -1;
+        var encoded = localStorage.getItem(key + '.data');
+        if (!encoded) return -1;
+        return atob(encoded).length;
+    } catch (e) {
+        console.warn('[PLAYER] autosave localStorage size read failed', e);
+        return -1;
+    }
+});
+
+EM_JS(int, player_web_local_storage_get_bytes,
+      (const char *key_ptr, uint8_t *out_ptr, int max_length), {
+    var key = UTF8ToString(key_ptr);
+    try {
+        if (typeof localStorage === 'undefined') return -1;
+        var encoded = localStorage.getItem(key + '.data');
+        if (!encoded) return -1;
+        var binary = atob(encoded);
+        if (binary.length > max_length) return -1;
+        for (var i = 0; i < binary.length; i++) {
+            HEAPU8[out_ptr + i] = binary.charCodeAt(i) & 0xff;
+        }
+        return binary.length;
+    } catch (e) {
+        console.warn('[PLAYER] autosave localStorage read failed', e);
+        return -1;
+    }
+});
+
+EM_JS(double, player_web_local_storage_get_mtime_ms, (const char *key_ptr), {
+    var key = UTF8ToString(key_ptr);
+    try {
+        if (typeof localStorage === 'undefined') return 0;
+        var value = Number(localStorage.getItem(key + '.mtime_ms'));
+        return isFinite(value) ? value : 0;
+    } catch (e) {
+        return 0;
+    }
+});
+
+static bool player_web_is_autosave_subpath(const char *subpath)
+{
+    return subpath && strcmp(subpath, AUTOSAVE_FILE_SUBPATH) == 0;
+}
+
+static bool player_web_read_file_bytes(const char *path,
+                                       uint8_t **out_data,
+                                       size_t *out_size)
+{
+    FILE *f;
+    long sz;
+    uint8_t *data;
+
+    if (!out_data || !out_size) return false;
+    *out_data = NULL;
+    *out_size = 0;
+    if (!path || !*path) return false;
+
+    f = fopen(path, "rb");
+    if (!f) return false;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return false;
+    }
+    sz = ftell(f);
+    if (sz <= 0 || sz > INT_MAX || fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return false;
+    }
+    data = (uint8_t *)malloc((size_t)sz);
+    if (!data) {
+        fclose(f);
+        return false;
+    }
+    if (fread(data, 1, (size_t)sz, f) != (size_t)sz) {
+        free(data);
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+    *out_data = data;
+    *out_size = (size_t)sz;
+    return true;
+}
+
+static bool player_web_persist_autosave_file(const char *subpath,
+                                             const char *path,
+                                             const char *save_label)
+{
+    uint8_t *data = NULL;
+    size_t size = 0;
+    bool ok;
+
+    if (!player_web_is_autosave_subpath(subpath)) return true;
+    if (!player_web_read_file_bytes(path, &data, &size)) {
+        g_web_autosave_storage_stale = true;
+        return false;
+    }
+    if (size > INT_MAX) {
+        free(data);
+        g_web_autosave_storage_stale = true;
+        return false;
+    }
+
+    ok = player_web_local_storage_set_bytes(PLAYER_WEB_AUTOSAVE_STORAGE_KEY,
+                                            data, (int)size) != 0;
+    free(data);
+    g_web_autosave_storage_stale = !ok;
+    if (!ok) {
+        printf("[PLAYER] %s: browser localStorage persistence failed\n",
+               save_label ? save_label : "autosave");
+    }
+    return ok;
+}
+
+static void player_web_restore_autosave_if_needed(const char *subpath,
+                                                  const char *path)
+{
+    int size;
+    uint8_t *data;
+    FILE *f;
+
+    if (!player_web_is_autosave_subpath(subpath) || g_web_autosave_restored)
+        return;
+    g_web_autosave_restored = true;
+
+    size = player_web_local_storage_get_size(PLAYER_WEB_AUTOSAVE_STORAGE_KEY);
+    if (size <= 0 || size > INT_MAX) return;
+
+    data = (uint8_t *)malloc((size_t)size);
+    if (!data) return;
+    if (player_web_local_storage_get_bytes(PLAYER_WEB_AUTOSAVE_STORAGE_KEY,
+                                           data, size) != size) {
+        free(data);
+        return;
+    }
+
+    f = fopen(path, "wb");
+    if (!f) {
+        free(data);
+        return;
+    }
+    if (fwrite(data, 1, (size_t)size, f) == (size_t)size) {
+        g_web_autosave_storage_stale = false;
+        printf("[PLAYER] autosave: restored browser localStorage copy\n");
+    }
+    fclose(f);
+    free(data);
+}
+
+static bool player_web_read_autosave_timestamp(char *out, size_t out_size)
+{
+    double mtime_ms;
+    time_t t;
+
+    if (!out || out_size == 0 || g_web_autosave_storage_stale) return false;
+    mtime_ms = player_web_local_storage_get_mtime_ms(PLAYER_WEB_AUTOSAVE_STORAGE_KEY);
+    if (mtime_ms <= 0.0) return false;
+    t = (time_t)(mtime_ms / 1000.0);
+    player_save_format_timestamp(t, out, out_size);
+    return true;
+}
+#endif
+
 static bool player_read_full_save_info(const char *subpath, PlayerAutosaveInfo *info)
 {
     char path[512];
@@ -1981,6 +2183,9 @@ static bool player_read_full_save_info(const char *subpath, PlayerAutosaveInfo *
     snprintf(info->timestamp, sizeof(info->timestamp), "UNKNOWN TIME");
 
     io_make_exe_path(path, sizeof(path), subpath);
+#if defined(__EMSCRIPTEN__)
+    player_web_restore_autosave_if_needed(subpath, path);
+#endif
     have_stat = (AB3D_SAVE_STAT(path, &st) == 0);
     f = fopen(path, "rb");
     if (!f) return false;
@@ -1999,6 +2204,13 @@ static bool player_read_full_save_info(const char *subpath, PlayerAutosaveInfo *
 
     info->present = true;
     info->level = hdr.current_level;
+#if defined(__EMSCRIPTEN__)
+    if (player_web_is_autosave_subpath(subpath) &&
+        player_web_read_autosave_timestamp(info->timestamp,
+                                           sizeof(info->timestamp))) {
+        return true;
+    }
+#endif
     if (have_stat) {
         player_save_format_timestamp(st.st_mtime, info->timestamp,
                                      sizeof(info->timestamp));
@@ -2625,6 +2837,12 @@ static void player_save_state_to_file(GameState *state, const char *subpath,
     }
 
     fclose(f);
+#if defined(__EMSCRIPTEN__)
+    if (!player_web_persist_autosave_file(subpath, path, save_label)) {
+        printf("[PLAYER] %s: autosave remains available until the page closes\n",
+               save_label);
+    }
+#endif
     printf("[PLAYER] %s: full game + level state (level %d) written to %s\n",
            save_label, (int)state->current_level, path);
     return;
@@ -2780,6 +2998,9 @@ static PlayerSaveLoadResult player_load_from_file(GameState *state,
     if (!load_label || !*load_label) load_label = "load";
     player_save_clear_pending_full_save();
     io_make_exe_path(path, sizeof(path), subpath);
+#if defined(__EMSCRIPTEN__)
+    player_web_restore_autosave_if_needed(subpath, path);
+#endif
     FILE *f = fopen(path, "rb");
     if (!f) return PLAYER_SAVE_LOAD_FAILED;
 

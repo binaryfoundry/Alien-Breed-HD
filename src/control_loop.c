@@ -657,6 +657,7 @@ void play_the_game_finalize_session(GameState *state)
     state->do_anything = false;
 }
 
+#if !defined(__EMSCRIPTEN__)
 void play_the_game(GameState *state)
 {
     /* Fresh session: do not carry F9 reload state from a prior play_the_game call */
@@ -681,6 +682,7 @@ void play_the_game(GameState *state)
 
     play_the_game_finalize_session(state);
 }
+#endif
 
 static void control_game_over_fade_tick(float progress_0_to_1, void *userdata)
 {
