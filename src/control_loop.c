@@ -46,6 +46,7 @@
 static void control_game_over_fade_tick(float progress_0_to_1, void *userdata);
 static void control_level_complete_fade_tick(float progress_0_to_1, void *userdata);
 static bool s_autosave_next_level_start = false;
+static bool s_show_transition_level_text = false;
 
 /* -----------------------------------------------------------------------
  * Password system
@@ -276,7 +277,8 @@ int read_main_menu(GameState *state)
 
 int play_the_game_should_show_level_text(const GameState *state)
 {
-    return state &&
+    return s_show_transition_level_text &&
+           state &&
            state->mode == MODE_SINGLE &&
            !state->f9_pending_apply_save &&
            state->current_level >= 0 &&
@@ -468,6 +470,7 @@ void play_the_game_prepare_level(GameState *state, bool *copper_screen_ready)
 {
     bool applying_pending_save = state->f9_pending_apply_save;
 
+    s_show_transition_level_text = false;
     state->running = true;
 
     printf("[GAME] === PlayTheGame: level %d ===\n", state->current_level);
@@ -721,6 +724,7 @@ static void control_setup_new_game_state(GameState *state)
 {
     display_clear_screen_tint();
     game_state_setup_default(state);
+    s_show_transition_level_text = false;
 
     state->plr1.gun_selected = 0;
     state->plr2.gun_selected = 0;
@@ -752,6 +756,54 @@ static void control_setup_new_game_state(GameState *state)
     }
 }
 
+static int control_find_latest_autosave(PlayerAutosaveInfo *out_info)
+{
+    PlayerAutosaveInfo info;
+
+    for (int slot = 0; slot < PLAYER_AUTOSAVE_SLOT_COUNT; slot++) {
+        if (player_read_autosave_info(slot, &info)) {
+            if (out_info) *out_info = info;
+            return slot;
+        }
+    }
+    return -1;
+}
+
+static void control_try_start_from_latest_autosave(GameState *state)
+{
+    PlayerAutosaveInfo info;
+    int slot;
+    PlayerSaveLoadResult result;
+
+    if (!state) return;
+
+    slot = control_find_latest_autosave(&info);
+    if (slot < 0)
+        return;
+
+    result = player_load_autosave_from_file(state, slot);
+    switch (result) {
+    case PLAYER_SAVE_LOAD_NEED_LEVEL_RELOAD:
+        state->f9_pending_apply_save = true;
+        state->debug_f9_need_level_reload = false;
+        s_show_transition_level_text = false;
+        printf("[CONTROL] Starting from autosave %d: level %d  %s\n",
+               slot + 1, (int)info.level + 1, info.timestamp);
+        return;
+
+    case PLAYER_SAVE_LOAD_APPLIED:
+        s_show_transition_level_text = false;
+        printf("[CONTROL] Starting from autosave %d: level %d  %s\n",
+               slot + 1, (int)info.level + 1, info.timestamp);
+        return;
+
+    case PLAYER_SAVE_LOAD_FAILED:
+    default:
+        printf("[CONTROL] Latest autosave could not be loaded; starting new game\n");
+        return;
+    }
+}
+
 void play_game_load_shared_assets(GameState *state)
 {
     state->mode = MODE_SINGLE;
@@ -772,6 +824,7 @@ void play_game_load_shared_assets(GameState *state)
     io_load_sfx();
 
     control_setup_new_game_state(state);
+    control_try_start_from_latest_autosave(state);
 
     io_load_panel();
 }
@@ -816,6 +869,7 @@ int play_game_outer_should_continue(GameState *state)
 
     state->current_level++;
     s_autosave_next_level_start = true;
+    s_show_transition_level_text = true;
     printf("[CONTROL] Loading next level %d (player state preserved)\n",
            (int)state->current_level);
     return 1;
@@ -942,11 +996,13 @@ int play_game_outer_emscripten_finish(GameState *state)
         if (state->current_level == 3) {
             state->current_level = 0;
             s_autosave_next_level_start = true;
+            s_show_transition_level_text = true;
             printf("[CONTROL] Web: after level 4, looping to level 0 (player state preserved)\n");
             return 1;
         }
         state->current_level++;
         s_autosave_next_level_start = true;
+        s_show_transition_level_text = true;
         printf("[CONTROL] Loading next level %d (player state preserved)\n",
                (int)state->current_level);
         return 1;
