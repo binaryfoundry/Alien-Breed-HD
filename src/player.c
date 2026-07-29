@@ -54,6 +54,8 @@
 #define FOOTSTEP_WATER_SELECTOR (FOOTSTEP_WATER_SAMPLE - FOOTSTEP_SAMPLE_OFFSET)
 #define FOOTSTEP_NOISEVOL 80
 #define FOOTSTEP_SFX_COUNT 28
+#define PLAYER_CLOSE_RESCUE_EXTRA_DIST 24
+#define PLAYER_CLOSE_RESCUE_MAX_CROSS_MUL 2
 /* Amiga step-up: same scale as zone floor heights. game_data uses 40*256 for marines;
  * movement.c default is 40*256. Step-UP blocked when ledge is higher than this.
  * Step-DOWN always passable (unlimited). */
@@ -3408,6 +3410,89 @@ static bool player_mouse_look_target_in_vertical_aim(const GameState *state,
            ray_y <= (target_center_y + target_half_y);
 }
 
+static bool player_close_rescue_target(const GameState *state,
+                                       const PlayerState *plr,
+                                       int plr_num,
+                                       const GameObject *target,
+                                       int32_t dir_x, int32_t dir_z,
+                                       int32_t *out_fwd_dist,
+                                       int64_t *out_player_dist_sq)
+{
+    int obj_type;
+    int player_type;
+    int16_t target_cid;
+    int16_t target_x;
+    int16_t target_z;
+    int32_t plr_x;
+    int32_t plr_z;
+    int32_t dx;
+    int32_t dz;
+    int32_t close_dist;
+    int64_t dist_sq;
+    int64_t fwd_raw;
+    int64_t cross_raw;
+    int64_t abs_cross;
+    int32_t fwd_dist;
+    int16_t target_y;
+    int16_t target_bot;
+    int16_t target_top;
+    int32_t plr_height;
+    int16_t plr_y;
+    int16_t plr_bot;
+    int16_t plr_top;
+
+    if (!state || !plr || !target || !state->level.object_points) return false;
+
+    obj_type = target->obj.number;
+    if (obj_type < 0 || obj_type > 20) return false;
+    if (obj_type == OBJ_NBR_BARREL || obj_type == OBJ_NBR_GAS_PIPE) return false;
+    if (NASTY_LIVES(*target) <= 0) return false;
+
+    player_type = (plr_num == 1) ? OBJ_NBR_PLR1 : OBJ_NBR_PLR2;
+    target_cid = OBJ_CID(target);
+    if (target_cid < 0 || target_cid >= state->level.num_object_points) return false;
+
+    {
+        const uint8_t *pt = state->level.object_points + (uint32_t)(uint16_t)target_cid * 8u;
+        target_x = obj_w(pt + 0);
+        target_z = obj_w(pt + 4);
+    }
+
+    plr_x = plr->xoff >> 16;
+    plr_z = plr->zoff >> 16;
+    dx = (int32_t)target_x - plr_x;
+    dz = (int32_t)target_z - plr_z;
+    dist_sq = (int64_t)dx * (int64_t)dx + (int64_t)dz * (int64_t)dz;
+
+    close_dist = (int32_t)col_box_table[obj_type].width +
+                 (int32_t)col_box_table[player_type].width +
+                 PLAYER_CLOSE_RESCUE_EXTRA_DIST;
+    if (dist_sq > (int64_t)close_dist * (int64_t)close_dist) return false;
+
+    target_y = obj_w(target->raw + 4);
+    target_bot = (int16_t)(target_y - col_box_table[obj_type].half_height);
+    target_top = (int16_t)(target_y + col_box_table[obj_type].half_height);
+    plr_height = plr->s_height ? plr->s_height : plr->height;
+    plr_y = (int16_t)((plr->yoff + plr_height / 2) >> 7);
+    plr_bot = (int16_t)(plr_y - col_box_table[player_type].half_height);
+    plr_top = (int16_t)(plr_y + col_box_table[player_type].half_height);
+    if (target_top < plr_bot || target_bot > plr_top) return false;
+
+    fwd_raw = (int64_t)dx * (int64_t)dir_x + (int64_t)dz * (int64_t)dir_z;
+    if (fwd_raw <= 0) return false;
+
+    cross_raw = (int64_t)dx * (int64_t)dir_z - (int64_t)dz * (int64_t)dir_x;
+    abs_cross = (cross_raw < 0) ? -cross_raw : cross_raw;
+    if (abs_cross > fwd_raw * PLAYER_CLOSE_RESCUE_MAX_CROSS_MUL) return false;
+
+    fwd_dist = (int32_t)((fwd_raw * 4) >> 16);
+    if (fwd_dist < 1) fwd_dist = 1;
+
+    if (out_fwd_dist) *out_fwd_dist = fwd_dist;
+    if (out_player_dist_sq) *out_player_dist_sq = dist_sq;
+    return true;
+}
+
 static void player_shoot_internal(GameState *state, PlayerState *plr,
                                   int plr_num, const GunDataEntry *guns)
 {
@@ -3476,10 +3561,15 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
      * CalcPLR*InLine targets and solves bulyspd from targetydiff. Mouse-look
      * mode disables that target-derived vertical aim; instant weapons still scan
      * along the reticle so they can hit objects and keep the barrel priority
-     * from the original target selection. */
+     * from the original target selection. Mouse-look projectiles only enter
+     * this scan for the close-rescue case below. */
     bool fixed_view_auto_aim = !state->cfg_mouse_look;
     bool mouse_look_instant_targeting = state->cfg_mouse_look && gun->fire_bullet != 0;
-    bool target_scan_enabled = fixed_view_auto_aim || mouse_look_instant_targeting;
+    bool mouse_look_projectile_rescue_targeting = state->cfg_mouse_look && gun->fire_bullet == 0;
+    bool target_scan_enabled =
+        fixed_view_auto_aim ||
+        mouse_look_instant_targeting ||
+        mouse_look_projectile_rescue_targeting;
     int16_t bulyspd = 0; /* bullet Y velocity for vertical auto-aim */
 
     int8_t *obs_in_line = (plr_num == 1) ? plr1_obs_in_line : plr2_obs_in_line;
@@ -3508,6 +3598,7 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
     int closest_idx = -1;
     int32_t closest_dist = 32767;
     int32_t closest_target_ydiff = 0;
+    bool closest_is_close_rescue = false;
     int closest_barrel_idx = -1;
     int32_t closest_barrel_dist = 32767;
     int32_t closest_barrel_ydiff = 0;
@@ -3515,6 +3606,7 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
     int32_t closest_enemy_player_dist = 0;
     int32_t closest_enemy_player_ydiff = 0;
     int64_t closest_enemy_player_dist_sq = 0;
+    bool closest_enemy_player_is_close_rescue = false;
     bool have_enemy_player_dist = false;
     int64_t closest_barrel_player_dist_sq = 0;
     bool have_barrel_player_dist = false;
@@ -3527,13 +3619,6 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
             if (obj_cid < 0) break;
 
             int obj_type = obj->obj.number;
-            if (!obs_in_line[i]) continue;
-            /* For instant weapons, use explicit LOS re-check below instead of
-             * enemy can_see bits (which are floor-section strict and can reject
-             * valid upper/lower split-zone targets). */
-            if (!hitscan_from_room &&
-                ((((uint8_t)obj->obj.can_see) & player_can_see_bit) == 0u))
-                continue;
             if (OBJ_ZONE(obj) < 0) continue;
             if (obj_type == OBJ_NBR_GAS_PIPE) continue; /* hazard emitter: don't auto-lock */
             if ((uint8_t)obj_type > 31u) continue;
@@ -3542,8 +3627,28 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
             if (NASTY_LIVES(*obj) == 0 && obj_type != OBJ_NBR_BARREL) continue;
             if (obj_cid < 0 || obj_cid >= MAX_OBJECTS) continue;
 
+            int32_t rescue_dist = 0;
+            int64_t rescue_player_dist_sq = 0;
+            bool close_rescue_target =
+                player_close_rescue_target(state, plr, plr_num, obj,
+                                           dir_x, dir_z,
+                                           &rescue_dist,
+                                           &rescue_player_dist_sq);
+            if (mouse_look_projectile_rescue_targeting && !close_rescue_target) continue;
+            if (!obs_in_line[i] && !close_rescue_target) continue;
+            /* For instant weapons, use explicit LOS re-check below instead of
+             * enemy can_see bits (which are floor-section strict and can reject
+             * valid upper/lower split-zone targets). Close rescue targets are
+             * touching the player, so the player-facing cone is used instead. */
+            if (!close_rescue_target && !hitscan_from_room &&
+                ((((uint8_t)obj->obj.can_see) & player_can_see_bit) == 0u))
+                continue;
+
             int32_t dist = obj_dists[obj_cid];
-            if (dist <= 0) continue;
+            if (dist <= 0) {
+                if (!close_rescue_target) continue;
+                dist = rescue_dist;
+            }
             /* Runtime sin/cos table is half-scale (~16384) while Amiga
              * bigsine math in PlayerShoot uses full-scale (~32767). Scale
              * forward distance to preserve original auto-aim solve. */
@@ -3554,7 +3659,11 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
             int16_t obj_y = obj_w(obj->raw + 4);
             int32_t ydiff = ((int32_t)obj_y << 7) - plr->yoff;
             int32_t abs_ydiff = (ydiff < 0) ? -ydiff : ydiff;
-            if (mouse_look_instant_targeting) {
+            if (close_rescue_target) {
+                /* The player is touching a live enemy and looking roughly at it;
+                 * bypass vertical reticle/auto-aim gates so short enemies cannot
+                 * trap the player under the firing line. */
+            } else if (mouse_look_instant_targeting) {
                 if (!player_mouse_look_target_in_vertical_aim(state, plr, plr_num,
                                                               obj_type, ydiff, dist))
                     continue;
@@ -3592,7 +3701,10 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
 
             int64_t player_dist_sq = 0;
             bool have_player_dist = false;
-            if (state->level.object_points && obj_cid >= 0 &&
+            if (close_rescue_target) {
+                player_dist_sq = rescue_player_dist_sq;
+                have_player_dist = true;
+            } else if (state->level.object_points && obj_cid >= 0 &&
                 obj_cid < state->level.num_object_points) {
                 const uint8_t *pt = state->level.object_points + (uint32_t)(uint16_t)obj_cid * 8u;
                 int32_t pdx = (int32_t)obj_w(pt + 0) - (int32_t)(plr->xoff >> 16);
@@ -3617,6 +3729,7 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
                     closest_dist = dist;
                     closest_idx = i;
                     closest_target_ydiff = ydiff;
+                    closest_is_close_rescue = close_rescue_target;
                 }
                 if (have_player_dist &&
                     (!have_enemy_player_dist || player_dist_sq < closest_enemy_player_dist_sq)) {
@@ -3624,6 +3737,7 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
                     closest_enemy_player_idx = i;
                     closest_enemy_player_dist = dist;
                     closest_enemy_player_ydiff = ydiff;
+                    closest_enemy_player_is_close_rescue = close_rescue_target;
                     have_enemy_player_dist = true;
                 }
             }
@@ -3645,17 +3759,20 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
                 closest_idx = closest_enemy_player_idx;
                 closest_dist = closest_enemy_player_dist;
                 closest_target_ydiff = closest_enemy_player_ydiff;
+                closest_is_close_rescue = closest_enemy_player_is_close_rescue;
             } else if (!keep_enemy_target) {
                 closest_idx = closest_barrel_idx;
                 closest_dist = closest_barrel_dist;
                 closest_target_ydiff = closest_barrel_ydiff;
+                closest_is_close_rescue = false;
             }
         }
     }
     has_target = (closest_idx >= 0 && closest_dist > 0 && state->level.object_data);
     /* Calculate vertical aim toward target (PlayerShoot.s lines 99-139). */
     {
-        if (fixed_view_auto_aim && has_target) {
+        bool mouse_look_close_rescue_aim = state->cfg_mouse_look && closest_is_close_rescue;
+        if ((fixed_view_auto_aim || mouse_look_close_rescue_aim) && has_target) {
             int32_t target_ydiff = closest_target_ydiff;
             int32_t aim_dist = closest_dist;
 
@@ -3725,7 +3842,8 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
         /* Projectile weapon: Amiga uses PlayerShotData for player projectiles. */
         if (!state->level.player_shot_data) return;
         if (state->cfg_mouse_look) {
-            bulyspd = player_sequel_mouse_aim_bulyspd(state, plr_num, gun->bullet_speed);
+            if (!closest_is_close_rescue)
+                bulyspd = player_sequel_mouse_aim_bulyspd(state, plr_num, gun->bullet_speed);
         } else if (!has_target) {
             /* PlayerShoot.s nothingtoshoot path zeros bulyspd before PLR1FIREBULLET.
              * All projectile guns share this; per-gun arc differs via gun data
