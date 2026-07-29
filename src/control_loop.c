@@ -595,6 +595,11 @@ void play_the_game_prepare_level(GameState *state, bool *copper_screen_ready)
     }
     s_autosave_next_level_start = false;
 
+    /* AB3DI.s fades TextCop down, then switches to BigFieldCop. Clear the
+     * modern double-buffer history at the same boundary so the first new-level
+     * frame cannot sample pixels from the previous level. */
+    renderer_clear_frame_history();
+
     printf("[GAME] Entering main loop...\n");
 }
 

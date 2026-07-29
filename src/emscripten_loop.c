@@ -24,6 +24,7 @@ typedef enum {
     EM_PREP,
     EM_TEXT_WAIT,
     EM_TEXT_FADE_OUT,
+    EM_TEXT_CLEAR,
     EM_GAME,
     EM_AFTER,
     EM_OUTER_POST
@@ -92,9 +93,13 @@ static void em_frame(void)
         g_em_text_step--;
         if (g_em_text_step < 0) {
             play_the_game_clear_level_text(st);
-            game_loop_ctx_init(&g_em_gl_ctx, st);
-            g_em_phase = EM_GAME;
+            g_em_phase = EM_TEXT_CLEAR;
         }
+        return;
+    case EM_TEXT_CLEAR:
+        display_present_text_screen_alpha(0);
+        game_loop_ctx_init(&g_em_gl_ctx, st);
+        g_em_phase = EM_GAME;
         return;
     case EM_GAME:
         game_loop_tick(st, &g_em_gl_ctx);

@@ -4532,6 +4532,8 @@ static uint32_t s_clear_sky_row[CLEAR_ROW_MAX];
 static uint16_t s_clear_sky_cw_row[CLEAR_ROW_MAX];
 static int s_clear_rows_inited = 0;
 
+static void renderer_f2_pick_snapshot_clear(RendererF2PickSnapshot *snap);
+
 static AB3D_ATTR_UNUSED void init_clear_rows(void)
 {
     if (s_clear_rows_inited) return;
@@ -4540,6 +4542,68 @@ static AB3D_ATTR_UNUSED void init_clear_rows(void)
         s_clear_sky_cw_row[i] = 0x0EEEu;
     }
     s_clear_rows_inited = 1;
+}
+
+static void renderer_clear_rgb_history_buffer(uint32_t *p, int w, int h)
+{
+    if (!p || w <= 0 || h <= 0) return;
+    init_clear_rows();
+    if (w <= CLEAR_ROW_MAX) {
+        size_t row_bytes = (size_t)w * sizeof(uint32_t);
+        for (int y = 0; y < h; y++)
+            memcpy(p + (size_t)y * (size_t)w, s_clear_sky_row, row_bytes);
+    } else {
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++)
+                p[(size_t)y * (size_t)w + (size_t)x] = RENDER_RGB_CLEAR_SKY_PIXEL;
+        }
+    }
+}
+
+static void renderer_clear_cw_history_buffer(uint16_t *p, int w, int h)
+{
+    if (!p || w <= 0 || h <= 0) return;
+    init_clear_rows();
+    if (w <= CLEAR_ROW_MAX) {
+        size_t row_bytes = (size_t)w * sizeof(uint16_t);
+        for (int y = 0; y < h; y++)
+            memcpy(p + (size_t)y * (size_t)w, s_clear_sky_cw_row, row_bytes);
+    } else {
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++)
+                p[(size_t)y * (size_t)w + (size_t)x] = 0x0EEEu;
+        }
+    }
+}
+
+void renderer_clear_frame_history(void)
+{
+    int w = g_renderer.width;
+    int h = g_renderer.height;
+    size_t pixel_count;
+    size_t buf_size;
+    size_t cw_size;
+
+    if (w <= 0 || h <= 0) return;
+    pixel_count = (size_t)w * (size_t)h;
+    buf_size = pixel_count;
+    cw_size = pixel_count * sizeof(uint16_t);
+
+    if (g_renderer.buffer) memset(g_renderer.buffer, 0, buf_size);
+    if (g_renderer.back_buffer) memset(g_renderer.back_buffer, 0, buf_size);
+    renderer_clear_rgb_history_buffer(g_renderer.rgb_buffer, w, h);
+    renderer_clear_rgb_history_buffer(g_renderer.rgb_back_buffer, w, h);
+    renderer_clear_cw_history_buffer(g_renderer.cw_buffer, w, h);
+    renderer_clear_cw_history_buffer(g_renderer.cw_back_buffer, w, h);
+
+    if (g_pick_zone_buffer) memset(g_pick_zone_buffer, 0xFF, cw_size);
+    if (g_pick_zone_back_buffer) memset(g_pick_zone_back_buffer, 0xFF, cw_size);
+    if (g_pick_player_buffer) memset(g_pick_player_buffer, 0, buf_size);
+    if (g_pick_player_back_buffer) memset(g_pick_player_back_buffer, 0, buf_size);
+    g_pick_capture_armed = 0;
+    g_pick_capture_active = 0;
+    g_pick_last_frame_valid = 0;
+    renderer_f2_pick_snapshot_clear(&g_renderer_f2_pick_snapshot);
 }
 
 void renderer_clear(uint8_t color)

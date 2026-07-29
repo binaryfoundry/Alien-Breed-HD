@@ -323,6 +323,8 @@ void renderer_resize(int w, int h);
 
 /* Clear the framebuffer to a color */
 void renderer_clear(uint8_t color);
+/* Clear both render buffers so a newly loaded level cannot sample/present stale history. */
+void renderer_clear_frame_history(void);
 
 /* Sky backdrop (Amiga data/gfx/backfile). Drawn first each frame after clear.
  * Standard backfile: 32832 bytes = 432 x 38 x 2 (big-endian 12-bit words), interpreted in
