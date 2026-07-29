@@ -180,6 +180,7 @@ static bool g_gamecontroller_subsystem_inited = false;
 static uint8_t g_gamepad_duck_toggle_queue = 0;
 static int16_t g_gamepad_weapon_cycle_steps = 0;
 static int16_t g_gamepad_mouse_dx = 0;
+static int16_t g_gamepad_mouse_dy = 0;
 
 /* True after we successfully enable relative mode (click-to-play). The browser may
  * exit pointer lock before SDL_KEYDOWN(Escape) is delivered, so SDL_GetRelativeMouseMode()
@@ -254,6 +255,8 @@ static void input_close_gamepad(void)
     memset(&g_joy2, 0, sizeof(g_joy2));
     g_gamepad_duck_toggle_queue = 0;
     g_gamepad_weapon_cycle_steps = 0;
+    g_gamepad_mouse_dx = 0;
+    g_gamepad_mouse_dy = 0;
 }
 
 static void input_try_open_gamepad(int device_index)
@@ -300,6 +303,7 @@ static void input_update_gamepad(uint8_t *last_pressed)
     int16_t lx;
     int16_t ly;
     int16_t rx;
+    int16_t ry;
     int16_t lt;
     int16_t rt;
     int move_mag;
@@ -315,6 +319,7 @@ static void input_update_gamepad(uint8_t *last_pressed)
     memset(&g_joy2, 0, sizeof(g_joy2));
 
     g_gamepad_mouse_dx = 0;
+    g_gamepad_mouse_dy = 0;
     if (!g_gamepad) return;
 
     lx = input_axis_with_deadzone(
@@ -325,6 +330,9 @@ static void input_update_gamepad(uint8_t *last_pressed)
         PAD_MOVE_DEADZONE);
     rx = input_axis_with_deadzone(
         SDL_GameControllerGetAxis(g_gamepad, SDL_CONTROLLER_AXIS_RIGHTX),
+        PAD_LOOK_DEADZONE);
+    ry = input_axis_with_deadzone(
+        SDL_GameControllerGetAxis(g_gamepad, SDL_CONTROLLER_AXIS_RIGHTY),
         PAD_LOOK_DEADZONE);
     lt = input_axis_with_deadzone(
         SDL_GameControllerGetAxis(g_gamepad, SDL_CONTROLLER_AXIS_TRIGGERLEFT),
@@ -364,6 +372,9 @@ static void input_update_gamepad(uint8_t *last_pressed)
     }
 
     g_gamepad_mouse_dx = (int16_t)input_axis_to_mouse_delta(rx);
+    if (g_state.cfg_mouse_look) {
+        g_gamepad_mouse_dy = (int16_t)input_axis_to_mouse_delta(ry);
+    }
 
     for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; b++) {
         buttons[b] = (uint8_t)SDL_GameControllerGetButton(g_gamepad, (SDL_GameControllerButton)b);
@@ -417,6 +428,7 @@ static void input_apply_relative_mouse(SDL_bool want_capture, uint8_t *key_map)
         g_mouse.dx = 0;
         g_mouse.dy = 0;
         g_gamepad_mouse_dx = 0;
+        g_gamepad_mouse_dy = 0;
         input_clear_key_sources();
         if (key_map) {
             input_merge_key_sources(key_map);
@@ -445,6 +457,7 @@ void input_init(void)
     g_gamepad_duck_toggle_queue = 0;
     g_gamepad_weapon_cycle_steps = 0;
     g_gamepad_mouse_dx = 0;
+    g_gamepad_mouse_dy = 0;
     g_quit_requested = false;
     g_f7_spill_visualize_requested = false;
     g_f2_pick_log_requested = false;
@@ -662,6 +675,7 @@ void input_read_mouse(MouseState *out)
     if (out) {
         *out = g_mouse;
         out->dx = input_add_i16_clamped(out->dx, g_gamepad_mouse_dx);
+        out->dy = input_add_i16_clamped(out->dy, g_gamepad_mouse_dy);
     }
 }
 
@@ -671,6 +685,7 @@ void input_consume_mouse_deltas(void)
     g_mouse.dy = 0;
     g_mouse.wheel_y = 0;
     g_gamepad_mouse_dx = 0;
+    g_gamepad_mouse_dy = 0;
 }
 
 void input_read_joy1(JoyState *out)
