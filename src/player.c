@@ -2501,6 +2501,7 @@ static bool player_apply_pending_full_save_after_level_load(GameState *state)
     bool    ini_cfg_all_keys = state->cfg_all_keys;
     bool    ini_cfg_mouse_look = state->cfg_mouse_look;
     bool    ini_cfg_mouse_look_invert_y = state->cfg_mouse_look_invert_y;
+    int16_t ini_cfg_gamepad_look_speed = state->cfg_gamepad_look_speed;
     bool    ini_cfg_quicksave_load = state->cfg_quicksave_load;
     bool    ini_cfg_marine_hitscan_projectiles = state->cfg_marine_hitscan_projectiles;
     bool    ini_cfg_run_default = state->cfg_run_default;
@@ -2531,6 +2532,7 @@ static bool player_apply_pending_full_save_after_level_load(GameState *state)
     state->cfg_all_keys = ini_cfg_all_keys;
     state->cfg_mouse_look = ini_cfg_mouse_look;
     state->cfg_mouse_look_invert_y = ini_cfg_mouse_look_invert_y;
+    state->cfg_gamepad_look_speed = ini_cfg_gamepad_look_speed;
     state->cfg_quicksave_load = ini_cfg_quicksave_load;
     state->cfg_marine_hitscan_projectiles = ini_cfg_marine_hitscan_projectiles;
     state->cfg_run_default = ini_cfg_run_default;

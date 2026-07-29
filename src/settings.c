@@ -408,6 +408,15 @@ static void apply_line(GameState *state, char *line)
         state->cfg_mouse_look = parse_bool(val) ? true : false;
     } else if (strcmp(key, "mouse_look_invert_y") == 0) {
         state->cfg_mouse_look_invert_y = parse_bool(val) ? true : false;
+    } else if (strcmp(key, "gamepad_look_speed") == 0 ||
+               strcmp(key, "gamepad_turn_speed") == 0 ||
+               strcmp(key, "pad_turn_speed") == 0) {
+        int n = atoi(val);
+        if (n >= 25 && n <= 800) {
+            state->cfg_gamepad_look_speed = (int16_t)n;
+        } else {
+            printf("[SETTINGS] gamepad_look_speed ignored (use 25..800, 100=old speed): %s\n", val);
+        }
     } else if (strcmp(key, "quicksave_load") == 0 ||
                strcmp(key, "quick_save_load") == 0 ||
                strcmp(key, "quickload_save") == 0) {
@@ -524,7 +533,7 @@ static void apply_runtime_constraints(GameState *state)
 static void log_effective_settings(const GameState *state, const char *source_label)
 {
     if (state->cfg_start_level >= 0) {
-        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d mouse_look=%d mouse_look_invert_y=%d quicksave_load=%d marine_hitscan_projectiles=%d run_default=%d footsteps_water_only=%d crosshair=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d audio_buffer_samples=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d weapon_draw=%d post_tint=%d weapon_post_gl=%d show_fps=%d\n",
+        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d mouse_look=%d mouse_look_invert_y=%d gamepad_look_speed=%d quicksave_load=%d marine_hitscan_projectiles=%d run_default=%d footsteps_water_only=%d crosshair=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d audio_buffer_samples=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d weapon_draw=%d post_tint=%d weapon_post_gl=%d show_fps=%d\n",
                source_label,
                (int)state->cfg_start_level + 1,
                state->infinite_health ? 1 : 0,
@@ -533,6 +542,7 @@ static void log_effective_settings(const GameState *state, const char *source_la
                state->cfg_all_keys ? 1 : 0,
                state->cfg_mouse_look ? 1 : 0,
                state->cfg_mouse_look_invert_y ? 1 : 0,
+               (int)state->cfg_gamepad_look_speed,
                state->cfg_quicksave_load ? 1 : 0,
                state->cfg_marine_hitscan_projectiles ? 1 : 0,
                state->cfg_run_default ? 1 : 0,
@@ -553,7 +563,7 @@ static void log_effective_settings(const GameState *state, const char *source_la
                state->cfg_weapon_post_gl ? 1 : 0,
                state->cfg_show_fps ? 1 : 0);
     } else {
-         printf("[SETTINGS] %s: start_level=0 infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d mouse_look=%d mouse_look_invert_y=%d quicksave_load=%d marine_hitscan_projectiles=%d run_default=%d footsteps_water_only=%d crosshair=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d audio_buffer_samples=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d weapon_draw=%d post_tint=%d weapon_post_gl=%d show_fps=%d\n",
+         printf("[SETTINGS] %s: start_level=0 infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d mouse_look=%d mouse_look_invert_y=%d gamepad_look_speed=%d quicksave_load=%d marine_hitscan_projectiles=%d run_default=%d footsteps_water_only=%d crosshair=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d audio_buffer_samples=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d weapon_draw=%d post_tint=%d weapon_post_gl=%d show_fps=%d\n",
                source_label,
                state->infinite_health ? 1 : 0,
                state->infinite_ammo ? 1 : 0,
@@ -561,6 +571,7 @@ static void log_effective_settings(const GameState *state, const char *source_la
                state->cfg_all_keys ? 1 : 0,
                state->cfg_mouse_look ? 1 : 0,
                state->cfg_mouse_look_invert_y ? 1 : 0,
+               (int)state->cfg_gamepad_look_speed,
                state->cfg_quicksave_load ? 1 : 0,
                state->cfg_marine_hitscan_projectiles ? 1 : 0,
                state->cfg_run_default ? 1 : 0,

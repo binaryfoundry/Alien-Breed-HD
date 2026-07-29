@@ -133,18 +133,20 @@ static int16_t input_axis_with_deadzone(Sint16 raw, int deadzone)
     return (int16_t)(scaled * sign);
 }
 
-static int input_axis_to_mouse_delta(int16_t axis)
+static int input_axis_to_mouse_delta(int16_t axis, int speed_percent)
 {
     int mag = input_abs_i32((int)axis);
     int shaped;
     int delta;
 
     if (mag <= 0) return 0;
+    if (speed_percent < 1) speed_percent = 100;
 
     /* Blend linear + quadratic response:
      * near center = precise, near edge = quick turn. */
     shaped = (mag + ((mag * mag) / 32767)) / 2;
-    delta = shaped / PAD_LOOK_AXIS_TO_MOUSE_DIV;
+    delta = (int)(((int64_t)shaped * (int64_t)speed_percent) /
+                  ((int64_t)PAD_LOOK_AXIS_TO_MOUSE_DIV * 100));
     if (delta == 0 && mag >= PAD_LOOK_MIN_DELTA_AXIS) {
         delta = 1;
     }
@@ -371,9 +373,11 @@ static void input_update_gamepad(uint8_t *last_pressed)
         input_set_key_state(g_gamepad_keys, AMIGA_KEY_P, true);
     }
 
-    g_gamepad_mouse_dx = (int16_t)input_axis_to_mouse_delta(rx);
+    g_gamepad_mouse_dx =
+        (int16_t)input_axis_to_mouse_delta(rx, g_state.cfg_gamepad_look_speed);
     if (g_state.cfg_mouse_look) {
-        g_gamepad_mouse_dy = (int16_t)input_axis_to_mouse_delta(ry);
+        g_gamepad_mouse_dy =
+            (int16_t)input_axis_to_mouse_delta(ry, g_state.cfg_gamepad_look_speed);
     }
 
     for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; b++) {
