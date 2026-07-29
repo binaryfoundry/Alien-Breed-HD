@@ -207,6 +207,7 @@ static Uint8 g_screen_tint_r = 0;
 static Uint8 g_screen_tint_g = 0;
 static Uint8 g_screen_tint_b = 0;
 static Uint8 g_screen_tint_a = 0;
+static int g_suppress_next_present_count = 0;
 /* Reused for GL automap line NDC conversion (avoid per-frame malloc/free). */
 static float *g_gl_lines_ndc_scratch = NULL;
 static size_t g_gl_lines_ndc_scratch_cap = 0;
@@ -3509,6 +3510,10 @@ static void display_present_cw_frame(GameState *state)
     if (g_gl_unpack_ok && g_gl_hud_ok)
         display_gl_overlay_end();
 
+    if (g_suppress_next_present_count > 0) {
+        g_suppress_next_present_count--;
+        return;
+    }
     SDL_RenderPresent(g_sdl_ren);
 
     /* Debug: show player position in window title (throttled) */
@@ -3539,6 +3544,12 @@ void display_draw_display(GameState *state)
 void display_present_last_frame(GameState *state)
 {
     display_present_cw_frame(state);
+}
+
+void display_suppress_next_present(void)
+{
+    if (g_suppress_next_present_count < 16)
+        g_suppress_next_present_count++;
 }
 
 void display_present_text_screen(void)

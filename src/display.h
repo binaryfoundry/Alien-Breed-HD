@@ -49,6 +49,7 @@ void display_upload_gun_gl_textures(void);
 void display_init_copper_screen(void);
 void display_draw_display(GameState *state);  /* Renders 3D scene; presents 12-bit cw framebuffer */
 void display_present_last_frame(GameState *state); /* Presents the last rendered frame without re-rendering/swap */
+void display_suppress_next_present(void); /* Render/upload the next frame without showing it */
 void display_present_text_screen(void); /* Presents the retained text screen without a 3D frame */
 void display_present_text_screen_alpha(int alpha); /* Same as above with text alpha 0..255 */
 void display_swap_buffers(void);

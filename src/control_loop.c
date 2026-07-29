@@ -445,6 +445,7 @@ static int control_level_text_wait_and_fade_out(GameState *state)
     display_present_text_screen_alpha(0);
     return 1;
 }
+
 #endif
 
 /*
@@ -567,6 +568,10 @@ void play_the_game_prepare_level(GameState *state, bool *copper_screen_ready)
     /* ---- Set initial state ---- */
     state->hitcol = 0;
     state->hitcol2 = 0;
+    state->xdiff1 = 0;
+    state->zdiff1 = 0;
+    state->xdiff2 = 0;
+    state->zdiff2 = 0;
     state->master_quitting = false;
     state->slave_quitting = (state->mode == MODE_SINGLE);
     state->do_anything = true;
@@ -686,7 +691,7 @@ void play_the_game(GameState *state)
         if (show_level_text && !control_level_text_wait_and_fade_out(state)) {
             break;
         }
-        game_loop(state);
+        game_loop_with_hidden_start_frames(state, show_level_text ? 2 : 0);
         if (play_the_game_after_game_loop(state)) continue;
         break;
     }

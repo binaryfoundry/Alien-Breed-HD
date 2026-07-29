@@ -99,6 +99,7 @@ static void em_frame(void)
     case EM_TEXT_CLEAR:
         display_present_text_screen_alpha(0);
         game_loop_ctx_init(&g_em_gl_ctx, st);
+        g_em_gl_ctx.hidden_present_frames = 2;
         g_em_phase = EM_GAME;
         return;
     case EM_GAME:

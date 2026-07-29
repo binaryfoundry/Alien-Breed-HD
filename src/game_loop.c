@@ -209,6 +209,49 @@ static void apply_zone_order_workaround_level8_zone49(GameState *state, const Pl
     }
 }
 
+static void game_loop_prepare_zone_order(GameState *state)
+{
+    if (!state) return;
+
+    {
+        PlayerState *view_plr = (state->mode == MODE_SLAVE) ?
+                                &state->plr2 : &state->plr1;
+
+        /* Amiga: ListOfGraphRooms = current room's list (roompt + 48). */
+        const uint8_t *lgr_ptr = NULL;
+        if (state->level.data) {
+            int32_t lgr_off = -1;
+            if (view_plr->roompt >= 0) {
+                lgr_off = view_plr->roompt + 48;  /* ToListOfGraph */
+            } else if (view_plr->list_of_graph_rooms > 0) {
+                lgr_off = view_plr->list_of_graph_rooms;
+            }
+            if (lgr_off > 0) {
+                lgr_ptr = state->level.data + lgr_off;
+            }
+        }
+
+        /* Amiga uses high 16 bits of xoff/zoff for OrderZones side test
+         * (move.w xoff,d2 = first word of long). */
+        int32_t view_x = (int32_t)(int16_t)(view_plr->xoff >> 16);
+        int32_t view_z = (int32_t)(int16_t)(view_plr->zoff >> 16);
+        int32_t move_dx = (state->mode == MODE_SLAVE) ?
+                          (int32_t)state->xdiff2 : (int32_t)state->xdiff1;
+        int32_t move_dz = (state->mode == MODE_SLAVE) ?
+                          (int32_t)state->zdiff2 : (int32_t)state->zdiff1;
+        ZoneOrder zo;
+        order_zones(&zo, &state->level,
+                    view_x, view_z, move_dx, move_dz,
+                    (int)(view_plr->angpos & 0x3FFF),
+                    lgr_ptr);
+        memcpy(state->zone_order_zones, zo.zones,
+               (size_t)(zo.count < 256 ? zo.count : 256) * sizeof(int16_t));
+        state->zone_order_count = zo.count;
+        apply_zone_order_workaround_level8_zone49(state, view_plr);
+        state->view_list_of_graph_rooms = lgr_ptr;
+    }
+}
+
 void game_loop_ctx_init(GameLoopCtx *ctx, GameState *state)
 {
     memset(ctx, 0, sizeof(*ctx));
@@ -762,6 +805,11 @@ void game_loop_tick(GameState *state, GameLoopCtx *ctx)
             ctx->vblank_remainder_ms += elapsed;
             ctx->pending_vblanks += (int)(ctx->vblank_remainder_ms / 20);
             ctx->vblank_remainder_ms %= 20;
+            if (ctx->hidden_present_frames > 0 &&
+                ctx->pending_vblanks < GAME_TICK_VBLANKS) {
+                ctx->pending_vblanks = GAME_TICK_VBLANKS;
+                ctx->vblank_remainder_ms = 0;
+            }
         }
 
         /* Track how far we are into the current 50Hz tick (0=just ticked, 1=about to tick).
@@ -910,40 +958,7 @@ void game_loop_tick(GameState *state, GameLoopCtx *ctx)
             }
 
             /* Zone ordering for rendering */
-            {
-                PlayerState *view_plr = (state->mode == MODE_SLAVE) ?
-                                        &state->plr2 : &state->plr1;
-
-                /* Amiga: ListOfGraphRooms = current room's list (roompt + 48). */
-                const uint8_t *lgr_ptr = NULL;
-                if (state->level.data) {
-                    int32_t lgr_off = -1;
-                    if (view_plr->roompt >= 0) {
-                        lgr_off = view_plr->roompt + 48;  /* ToListOfGraph */
-                    } else if (view_plr->list_of_graph_rooms > 0) {
-                        lgr_off = view_plr->list_of_graph_rooms;
-                    }
-                    if (lgr_off > 0) {
-                        lgr_ptr = state->level.data + lgr_off;
-                    }
-                }
-
-                /* Amiga uses high 16 bits of xoff/zoff for OrderZones side test (move.w xoff,d2 = first word of long). */
-                int32_t view_x = (int32_t)(int16_t)(view_plr->xoff >> 16);
-                int32_t view_z = (int32_t)(int16_t)(view_plr->zoff >> 16);
-                int32_t move_dx = (state->mode == MODE_SLAVE) ? (int32_t)state->xdiff2 : (int32_t)state->xdiff1;
-                int32_t move_dz = (state->mode == MODE_SLAVE) ? (int32_t)state->zdiff2 : (int32_t)state->zdiff1;
-                ZoneOrder zo;
-                order_zones(&zo, &state->level,
-                            view_x, view_z, move_dx, move_dz,
-                            (int)(view_plr->angpos & 0x3FFF),
-                            lgr_ptr);
-                memcpy(state->zone_order_zones, zo.zones,
-                       (size_t)(zo.count < 256 ? zo.count : 256) * sizeof(int16_t));
-                state->zone_order_count = zo.count;
-                apply_zone_order_workaround_level8_zone49(state, view_plr);
-                state->view_list_of_graph_rooms = lgr_ptr;
-            }
+            game_loop_prepare_zone_order(state);
 
             game_log_zone_changes(state);
 
@@ -1031,7 +1046,15 @@ void game_loop_tick(GameState *state, GameLoopCtx *ctx)
         }
         display_energy_bar(state->energy);
         display_ammo_bar(state->ammo);
+        bool hidden_start_frame = (ctx->hidden_present_frames > 0);
+        if (hidden_start_frame) {
+            display_suppress_next_present();
+            ctx->hidden_present_frames--;
+        }
         display_draw_display(state);
+        if (hidden_start_frame && ctx->hidden_present_frames <= 0) {
+            game_loop_pause_timing(state, ctx);
+        }
         if (f2_pick_log_requested) {
             PlayerState *view_plr = (state->mode == MODE_SLAVE) ? &state->plr2 : &state->plr1;
             int16_t looking_zone = -1;
@@ -1125,10 +1148,12 @@ void game_loop_tick(GameState *state, GameLoopCtx *ctx)
  *   - Player reaches end zone (level complete)
  *   - Both players quitting (multiplayer)
  */
-void game_loop(GameState *state)
+void game_loop_with_hidden_start_frames(GameState *state, int hidden_frames)
 {
     GameLoopCtx ctx;
     game_loop_ctx_init(&ctx, state);
+    if (hidden_frames > 0)
+        ctx.hidden_present_frames = hidden_frames;
     while (state->running) {
         game_loop_tick(state, &ctx);
     }
@@ -1136,4 +1161,9 @@ void game_loop(GameState *state)
     printf("[LOOP] Exited: %d display frames, %d logic ticks (avg temp_frames=%d)\n",
            ctx.frame_count, ctx.logic_count,
            ctx.logic_count > 0 ? (ctx.frame_count * 5 / 6) / ctx.logic_count : 0);
+}
+
+void game_loop(GameState *state)
+{
+    game_loop_with_hidden_start_frames(state, 0);
 }

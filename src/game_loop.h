@@ -49,6 +49,7 @@ typedef struct GameLoopCtx {
     int ingame_menu_autosave_available[PLAYER_AUTOSAVE_SLOT_COUNT];
     int16_t ingame_menu_autosave_level[PLAYER_AUTOSAVE_SLOT_COUNT];
     char ingame_menu_autosave_timestamp[PLAYER_AUTOSAVE_SLOT_COUNT][32];
+    int hidden_present_frames;
 } GameLoopCtx;
 
 void game_loop_ctx_init(GameLoopCtx *ctx, GameState *state);
@@ -56,5 +57,6 @@ void game_loop_tick(GameState *state, GameLoopCtx *ctx);
 
 /* Run the main game loop until level ends, player dies, or quit */
 void game_loop(GameState *state);
+void game_loop_with_hidden_start_frames(GameState *state, int hidden_frames);
 
 #endif /* GAME_LOOP_H */
