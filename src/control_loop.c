@@ -676,9 +676,10 @@ void play_the_game_finalize_session(GameState *state)
 #if !defined(__EMSCRIPTEN__)
 void play_the_game(GameState *state)
 {
-    /* Fresh session: do not carry F9 reload state from a prior play_the_game call */
+    /* Fresh session: do not carry F9 reload state from a prior play_the_game call.
+     * Keep f9_pending_apply_save: startup/death autosave loads set it before
+     * entering this function so prepare_level can apply the pending full save. */
     state->debug_f9_need_level_reload = false;
-    state->f9_pending_apply_save = false;
 
     bool copper_screen_ready = false;
 
@@ -780,22 +781,20 @@ static int control_find_latest_autosave(PlayerAutosaveInfo *out_info)
     return -1;
 }
 
-static void control_try_start_from_latest_autosave(GameState *state)
+static bool control_load_latest_autosave(GameState *state, const char *log_prefix)
 {
     PlayerAutosaveInfo info;
     int slot;
     PlayerSaveLoadResult result;
 
-    if (!state) return;
-    if (state->cfg_start_level >= 0) {
-        printf("[CONTROL] Autosave startup skipped because start_level=%d\n",
-               (int)state->cfg_start_level + 1);
-        return;
-    }
+    if (!state) return false;
+    if (!log_prefix) log_prefix = "Autosave";
 
     slot = control_find_latest_autosave(&info);
-    if (slot < 0)
-        return;
+    if (slot < 0) {
+        printf("[CONTROL] %s: no autosave found\n", log_prefix);
+        return false;
+    }
 
     result = player_load_autosave_from_file(state, slot);
     switch (result) {
@@ -803,21 +802,41 @@ static void control_try_start_from_latest_autosave(GameState *state)
         state->f9_pending_apply_save = true;
         state->debug_f9_need_level_reload = false;
         s_show_transition_level_text = false;
-        printf("[CONTROL] Starting from autosave %d: level %d  %s\n",
-               slot + 1, (int)info.level + 1, info.timestamp);
-        return;
+        s_autosave_next_level_start = false;
+        printf("[CONTROL] %s: autosave %d level %d  %s\n",
+               log_prefix, slot + 1, (int)info.level + 1, info.timestamp);
+        return true;
 
     case PLAYER_SAVE_LOAD_APPLIED:
         s_show_transition_level_text = false;
-        printf("[CONTROL] Starting from autosave %d: level %d  %s\n",
-               slot + 1, (int)info.level + 1, info.timestamp);
-        return;
+        s_autosave_next_level_start = false;
+        printf("[CONTROL] %s: autosave %d level %d  %s\n",
+               log_prefix, slot + 1, (int)info.level + 1, info.timestamp);
+        return true;
 
     case PLAYER_SAVE_LOAD_FAILED:
     default:
-        printf("[CONTROL] Latest autosave could not be loaded; starting new game\n");
+        printf("[CONTROL] %s: latest autosave could not be loaded\n",
+               log_prefix);
+        return false;
+    }
+}
+
+static void control_try_start_from_latest_autosave(GameState *state)
+{
+    if (!state) return;
+    if (state->cfg_start_level >= 0) {
+        printf("[CONTROL] Autosave startup skipped because start_level=%d\n",
+               (int)state->cfg_start_level + 1);
         return;
     }
+
+    (void)control_load_latest_autosave(state, "Starting from latest autosave");
+}
+
+static bool control_try_recover_from_latest_autosave(GameState *state)
+{
+    return control_load_latest_autosave(state, "Recovering from death");
 }
 
 void play_game_load_shared_assets(GameState *state)
@@ -861,8 +880,12 @@ int play_game_outer_should_continue(GameState *state)
                                                       state);
             display_clear_screen_tint();
             printf("[MUSIC] outcome: game over\n");
-            control_setup_new_game_state(state);
-            printf("[CONTROL] Restarting new game after death\n");
+            if (control_try_recover_from_latest_autosave(state)) {
+                printf("[CONTROL] Loading latest autosave after death\n");
+            } else {
+                control_setup_new_game_state(state);
+                printf("[CONTROL] No autosave available; restarting new game after death\n");
+            }
             return 1;
         }
         return 0;
@@ -998,8 +1021,12 @@ int play_game_outer_emscripten_finish(GameState *state)
     case EM_OUTER_BR_GAMEOVER:
         display_clear_screen_tint();
         printf("[MUSIC] outcome: game over\n");
-        control_setup_new_game_state(state);
-        printf("[CONTROL] Restarting new game after death\n");
+        if (control_try_recover_from_latest_autosave(state)) {
+            printf("[CONTROL] Loading latest autosave after death\n");
+        } else {
+            control_setup_new_game_state(state);
+            printf("[CONTROL] No autosave available; restarting new game after death\n");
+        }
         return 1;
     case EM_OUTER_BR_ENDGAME:
         display_clear_screen_tint();
