@@ -3829,6 +3829,8 @@ static void display_present_cw_frame(GameState *state)
     const uint16_t *src = renderer_get_cw_buffer();
     if (!src) return;
 
+    display_sync_present_output_size(NULL, NULL);
+
     int w = renderer_get_width(), h = renderer_get_height();
 
     int use_gl_weapon = state && state->cfg_weapon_post_gl && g_gl_unpack_ok && g_gl_hud_ok;

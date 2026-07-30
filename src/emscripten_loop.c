@@ -139,6 +139,7 @@ static void em_frame(void)
         }
         return;
     case EM_OUTER_POST:
+        display_emscripten_frame_resize_poll();
         if (g_em_outer_sub == 0) {
             int need_fade = play_game_outer_emscripten_begin(st);
             g_em_outer_sub = need_fade ? 1 : 2;
