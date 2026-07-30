@@ -420,6 +420,76 @@ static void game_loop_move_autosave_menu_selection(GameLoopCtx *ctx, int step)
     }
 }
 
+static int game_loop_main_menu_item_at_line(const GameLoopCtx *ctx, int line)
+{
+    int row = 2;
+
+    if (game_loop_main_menu_item_enabled(ctx, INGAME_MENU_CONTINUE)) {
+        if (line == row) return INGAME_MENU_CONTINUE;
+        row++;
+    }
+
+    if (line == row) return INGAME_MENU_NEW_GAME;
+    row++;
+
+    if (line == row) {
+        return game_loop_main_menu_item_enabled(ctx, INGAME_MENU_AUTOSAVES) ?
+               INGAME_MENU_AUTOSAVES : -1;
+    }
+    row++;
+
+    if (line == row) return INGAME_MENU_MOUSE_LOOK;
+    row++;
+    if (line == row) return INGAME_MENU_FPS_COUNTER;
+    row++;
+    if (line == row) return INGAME_MENU_EXIT;
+    return -1;
+}
+
+static int game_loop_menu_item_at_line(const GameLoopCtx *ctx, int line)
+{
+    if (!ctx) return -1;
+
+    if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_MAIN)
+        return game_loop_main_menu_item_at_line(ctx, line);
+
+    if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_AUTOSAVES) {
+        if (line >= 2 && line < 2 + PLAYER_AUTOSAVE_SLOT_COUNT) {
+            int slot = line - 2;
+            return game_loop_autosave_menu_item_enabled(ctx, slot) ? slot : -1;
+        }
+        if (line == 7) return INGAME_MENU_AUTOSAVE_BACK;
+        return -1;
+    }
+
+    if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_NEW_GAME ||
+        ctx->ingame_menu_screen == INGAME_MENU_SCREEN_LOAD_AUTOSAVE) {
+        if (line == 6) return INGAME_MENU_CONFIRM_YES;
+        if (line == 7) return INGAME_MENU_CONFIRM_NO;
+    }
+
+    return -1;
+}
+
+static void game_loop_move_menu_selection(GameLoopCtx *ctx, int step)
+{
+    if (!ctx || step == 0) return;
+    if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_MAIN) {
+        game_loop_move_main_menu_selection(ctx, step);
+    } else if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_AUTOSAVES) {
+        game_loop_move_autosave_menu_selection(ctx, step);
+    } else {
+        if (step < 0) {
+            ctx->ingame_menu_selected =
+                (ctx->ingame_menu_selected + INGAME_MENU_CONFIRM_COUNT - 1) %
+                INGAME_MENU_CONFIRM_COUNT;
+        } else {
+            ctx->ingame_menu_selected =
+                (ctx->ingame_menu_selected + 1) % INGAME_MENU_CONFIRM_COUNT;
+        }
+    }
+}
+
 static void game_loop_present_menu(GameState *state, const GameLoopCtx *ctx)
 {
     if (ctx && ctx->ingame_menu_frontend) {
@@ -559,6 +629,7 @@ static void game_loop_close_ingame_menu(GameState *state, GameLoopCtx *ctx)
     ctx->ingame_menu_open = 0;
     ctx->ingame_menu_frontend = 0;
     ctx->ingame_menu_screen = INGAME_MENU_SCREEN_MAIN;
+    input_set_menu_mouse_active(false, state->key_map);
     display_clear_text_screen();
     input_clear_keyboard(state->key_map);
     game_loop_pause_timing(state, ctx);
@@ -574,6 +645,7 @@ static void game_loop_open_ingame_menu(GameState *state, GameLoopCtx *ctx)
     ctx->ingame_menu_autosave_selected_slot = 0;
     game_loop_set_main_menu_selection(ctx, INGAME_MENU_CONTINUE);
     input_clear_keyboard(state->key_map);
+    input_set_menu_mouse_active(true, state->key_map);
     game_loop_clear_queued_actions();
     game_loop_pause_timing(state, ctx);
     game_loop_draw_ingame_menu(state, ctx);
@@ -590,6 +662,7 @@ static void game_loop_load_autosave(GameState *state, GameLoopCtx *ctx)
     switch (player_load_autosave_from_file(state, slot)) {
     case PLAYER_SAVE_LOAD_APPLIED:
         if (ctx->ingame_menu_frontend) {
+            input_set_menu_mouse_active(false, state->key_map);
             display_clear_text_screen();
             input_clear_keyboard(state->key_map);
             ctx->ingame_menu_open = 0;
@@ -600,6 +673,7 @@ static void game_loop_load_autosave(GameState *state, GameLoopCtx *ctx)
         return;
 
     case PLAYER_SAVE_LOAD_NEED_LEVEL_RELOAD:
+        input_set_menu_mouse_active(false, state->key_map);
         display_clear_text_screen();
         input_clear_keyboard(state->key_map);
         state->f9_pending_apply_save = true;
@@ -627,6 +701,7 @@ static void game_loop_select_confirm_item(GameState *state, GameLoopCtx *ctx)
         if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_LOAD_AUTOSAVE) {
             game_loop_load_autosave(state, ctx);
         } else {
+            input_set_menu_mouse_active(false, state->key_map);
             display_clear_text_screen();
             input_clear_keyboard(state->key_map);
             if (ctx->ingame_menu_frontend) {
@@ -717,6 +792,7 @@ static void game_loop_select_ingame_menu_item(GameState *state, GameLoopCtx *ctx
         break;
 
     case INGAME_MENU_EXIT:
+        input_set_menu_mouse_active(false, state->key_map);
         display_clear_text_screen();
         input_clear_keyboard(state->key_map);
         if (ctx->ingame_menu_frontend) {
@@ -734,6 +810,44 @@ static void game_loop_select_ingame_menu_item(GameState *state, GameLoopCtx *ctx
 
     game_loop_pause_timing(state, ctx);
     game_loop_draw_ingame_menu(state, ctx);
+}
+
+static int game_loop_update_ingame_menu_mouse(GameState *state, GameLoopCtx *ctx)
+{
+    MenuMouseState mouse;
+    int text_line = -1;
+    int item = -1;
+    int have_mouse_event;
+
+    input_read_menu_mouse(&mouse);
+    have_mouse_event = mouse.moved || mouse.left_pressed ||
+                       mouse.right_pressed || mouse.wheel_y != 0;
+    if (!have_mouse_event)
+        return 0;
+
+    if (mouse.wheel_y > 0) {
+        game_loop_move_menu_selection(ctx, -1);
+    } else if (mouse.wheel_y < 0) {
+        game_loop_move_menu_selection(ctx, 1);
+    }
+
+    if ((mouse.moved || mouse.left_pressed) && mouse.valid &&
+        display_text_line_at_point(mouse.x, mouse.y,
+                                   ctx->ingame_menu_frontend, &text_line)) {
+        item = game_loop_menu_item_at_line(ctx, text_line);
+        if (item >= 0) {
+            ctx->ingame_menu_selected = item;
+            if (mouse.left_pressed) {
+                input_consume_menu_mouse_events();
+                game_loop_clear_queued_actions();
+                game_loop_select_ingame_menu_item(state, ctx);
+                return 1;
+            }
+        }
+    }
+
+    input_consume_menu_mouse_events();
+    return 0;
 }
 
 static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
@@ -770,6 +884,7 @@ static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
         } else if (ctx->ingame_menu_frontend) {
             game_loop_draw_ingame_menu(state, ctx);
         } else {
+            input_set_menu_mouse_active(false, state->key_map);
             display_clear_text_screen();
             input_clear_keyboard(state->key_map);
             state->finished_level = 0;
@@ -780,23 +895,11 @@ static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
 
     bool menu_up = input_consume_key_press(KEY_UP);
     bool menu_down = input_consume_key_press(KEY_DOWN);
-    if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_MAIN) {
-        if (menu_up) game_loop_move_main_menu_selection(ctx, -1);
-        if (menu_down) game_loop_move_main_menu_selection(ctx, 1);
-    } else if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_AUTOSAVES) {
-        if (menu_up) game_loop_move_autosave_menu_selection(ctx, -1);
-        if (menu_down) game_loop_move_autosave_menu_selection(ctx, 1);
-    } else {
-        if (menu_up) {
-            ctx->ingame_menu_selected =
-                (ctx->ingame_menu_selected + INGAME_MENU_CONFIRM_COUNT - 1) %
-                INGAME_MENU_CONFIRM_COUNT;
-        }
-        if (menu_down) {
-            ctx->ingame_menu_selected =
-                (ctx->ingame_menu_selected + 1) % INGAME_MENU_CONFIRM_COUNT;
-        }
-    }
+    if (menu_up) game_loop_move_menu_selection(ctx, -1);
+    if (menu_down) game_loop_move_menu_selection(ctx, 1);
+
+    if (game_loop_update_ingame_menu_mouse(state, ctx))
+        return 1;
 
     bool menu_accept = input_consume_key_press(KEY_RETURN);
     menu_accept = input_consume_key_press(KEY_SPACE) || menu_accept;
@@ -834,6 +937,7 @@ void game_loop_front_menu_init(GameLoopCtx *ctx, GameState *state)
     input_clear_keyboard(state->key_map);
     game_loop_clear_queued_actions();
     game_loop_pause_timing(state, ctx);
+    input_set_menu_mouse_active(true, state->key_map);
     game_loop_draw_ingame_menu(state, ctx);
 }
 
@@ -851,6 +955,7 @@ int game_loop_front_menu_tick(GameState *state, GameLoopCtx *ctx)
         display_toggle_fullscreen();
 
     if (input_quit_requested()) {
+        input_set_menu_mouse_active(false, state->key_map);
         ctx->ingame_menu_open = 0;
         ctx->ingame_menu_result = GAME_LOOP_FRONT_MENU_EXIT;
         return ctx->ingame_menu_result;

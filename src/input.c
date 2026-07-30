@@ -158,6 +158,8 @@ static int input_axis_to_mouse_delta(int16_t axis, int speed_percent)
  * Mouse state
  * ----------------------------------------------------------------------- */
 static MouseState g_mouse = {0};
+static MenuMouseState g_menu_mouse = {0};
+static bool g_menu_mouse_active = false;
 static JoyState g_joy1 = {0};
 static JoyState g_joy2 = {0};
 static bool g_quit_requested = false;
@@ -448,6 +450,28 @@ static void input_apply_relative_mouse(SDL_bool want_capture, uint8_t *key_map)
     }
 }
 
+void input_set_menu_mouse_active(bool active, uint8_t *key_map)
+{
+    g_menu_mouse.left_pressed = false;
+    g_menu_mouse.right_pressed = false;
+    g_menu_mouse.wheel_y = 0;
+    g_menu_mouse.moved = false;
+
+    if (active) {
+        int x = 0;
+        int y = 0;
+        input_apply_relative_mouse(SDL_FALSE, key_map);
+        SDL_GetMouseState(&x, &y);
+        g_menu_mouse.x = x;
+        g_menu_mouse.y = y;
+        g_menu_mouse.valid = true;
+        g_menu_mouse_active = true;
+    } else {
+        g_menu_mouse.valid = false;
+        g_menu_mouse_active = false;
+    }
+}
+
 /* -----------------------------------------------------------------------
  * Lifecycle
  * ----------------------------------------------------------------------- */
@@ -455,6 +479,8 @@ void input_init(void)
 {
     printf("[INPUT] SDL2 input init\n");
     input_clear_key_sources();
+    memset(&g_menu_mouse, 0, sizeof(g_menu_mouse));
+    g_menu_mouse_active = false;
     memset(g_gamepad_prev_buttons, 0, sizeof(g_gamepad_prev_buttons));
     memset(&g_joy1, 0, sizeof(g_joy1));
     memset(&g_joy2, 0, sizeof(g_joy2));
@@ -583,6 +609,16 @@ void input_update(uint8_t *key_map, uint8_t *last_pressed)
         }
 
         case SDL_MOUSEMOTION:
+            if (g_menu_mouse_active) {
+                if (SDL_GetRelativeMouseMode()) {
+                    input_apply_relative_mouse(SDL_FALSE, key_map);
+                }
+                g_menu_mouse.x = ev.motion.x;
+                g_menu_mouse.y = ev.motion.y;
+                g_menu_mouse.valid = true;
+                g_menu_mouse.moved = true;
+                break;
+            }
             /* Only use mouse motion for look when captured */
             if (SDL_GetRelativeMouseMode()) {
                 g_mouse.dx = input_add_i16_clamped(g_mouse.dx, ev.motion.xrel);
@@ -591,6 +627,19 @@ void input_update(uint8_t *key_map, uint8_t *last_pressed)
             break;
 
         case SDL_MOUSEBUTTONDOWN:
+            if (g_menu_mouse_active) {
+                if (SDL_GetRelativeMouseMode()) {
+                    input_apply_relative_mouse(SDL_FALSE, key_map);
+                }
+                g_menu_mouse.x = ev.button.x;
+                g_menu_mouse.y = ev.button.y;
+                g_menu_mouse.valid = true;
+                if (ev.button.button == SDL_BUTTON_LEFT)
+                    g_menu_mouse.left_pressed = true;
+                if (ev.button.button == SDL_BUTTON_RIGHT)
+                    g_menu_mouse.right_pressed = true;
+                break;
+            }
             /* First left-click captures; that click is not treated as fire/jump */
             if (!SDL_GetRelativeMouseMode()) {
                 if (ev.button.button == SDL_BUTTON_LEFT) {
@@ -610,6 +659,15 @@ void input_update(uint8_t *key_map, uint8_t *last_pressed)
             break;
 
         case SDL_MOUSEBUTTONUP:
+            if (g_menu_mouse_active) {
+                if (SDL_GetRelativeMouseMode()) {
+                    input_apply_relative_mouse(SDL_FALSE, key_map);
+                }
+                g_menu_mouse.x = ev.button.x;
+                g_menu_mouse.y = ev.button.y;
+                g_menu_mouse.valid = true;
+                break;
+            }
             if (ev.button.button == SDL_BUTTON_LEFT) {
                 g_mouse.left_button = false;
                 if (SDL_GetRelativeMouseMode()) input_set_key_state(g_mouse_keys, AMIGA_KEY_RALT, false);
@@ -621,6 +679,14 @@ void input_update(uint8_t *key_map, uint8_t *last_pressed)
             break;
 
         case SDL_MOUSEWHEEL:
+            if (g_menu_mouse_active) {
+                int16_t wheel_y = (int16_t)ev.wheel.y;
+                if (ev.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+                    wheel_y = (int16_t)-wheel_y;
+                }
+                g_menu_mouse.wheel_y = input_add_i16_clamped(g_menu_mouse.wheel_y, wheel_y);
+                break;
+            }
             if (!SDL_GetRelativeMouseMode()) break;
             {
                 int16_t wheel_y = (int16_t)ev.wheel.y;
@@ -686,6 +752,19 @@ void input_read_mouse(MouseState *out)
         out->dx = input_add_i16_clamped(out->dx, g_gamepad_mouse_dx);
         out->dy = input_add_i16_clamped(out->dy, g_gamepad_mouse_dy);
     }
+}
+
+void input_read_menu_mouse(MenuMouseState *out)
+{
+    if (out) *out = g_menu_mouse;
+}
+
+void input_consume_menu_mouse_events(void)
+{
+    g_menu_mouse.left_pressed = false;
+    g_menu_mouse.right_pressed = false;
+    g_menu_mouse.wheel_y = 0;
+    g_menu_mouse.moved = false;
 }
 
 void input_consume_mouse_deltas(void)

@@ -32,6 +32,20 @@ typedef struct {
 void input_read_mouse(MouseState *out);
 void input_consume_mouse_deltas(void);
 
+typedef struct {
+    int     x;
+    int     y;
+    int16_t wheel_y;
+    bool    valid;
+    bool    moved;
+    bool    left_pressed;
+    bool    right_pressed;
+} MenuMouseState;
+
+void input_set_menu_mouse_active(bool active, uint8_t *key_map);
+void input_read_menu_mouse(MenuMouseState *out);
+void input_consume_menu_mouse_events(void);
+
 /* Joystick */
 typedef struct {
     int16_t dx;
