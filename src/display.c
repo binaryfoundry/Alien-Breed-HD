@@ -33,74 +33,106 @@
 
 /* SDL_SetWindowFullscreen is unreliable with the HTML5 canvas; use the Fullscreen API and
  * sync letterboxing when the canvas size changes. F11 often does not reach SDL (browser). */
-EM_JS(void, display_emscripten_install_fullscreen_listeners, (void), {
-    function ab3dToggleCanvasFullscreen() {
-        var c = Module['canvas'];
-        if (!c) return;
-        var el = document.fullscreenElement || document.webkitFullscreenElement ||
-                 document.mozFullScreenElement || document.msFullscreenElement;
-        if (el === c) {
-            var ex = document.exitFullscreen || document.webkitExitFullscreen ||
-                     document.mozCancelFullScreen || document.msExitFullscreen;
-            if (ex) ex.call(document);
-        } else {
-            var req = c.requestFullscreen || c.webkitRequestFullscreen ||
-                      c.mozRequestFullScreen || c.msRequestFullscreen;
-            if (req) req.call(c).catch(function() {});
+static void display_emscripten_install_fullscreen_listeners(void)
+{
+    MAIN_THREAD_EM_ASM(({
+        function ab3dToggleCanvasFullscreen() {
+            var c = Module['canvas'];
+            if (!c) return;
+            var el = document.fullscreenElement || document.webkitFullscreenElement ||
+                     document.mozFullScreenElement || document.msFullscreenElement;
+            if (el === c) {
+                var ex = document.exitFullscreen || document.webkitExitFullscreen ||
+                         document.mozCancelFullScreen || document.msExitFullscreen;
+                if (ex) ex.call(document);
+            } else {
+                var req = c.requestFullscreen || c.webkitRequestFullscreen ||
+                          c.mozRequestFullScreen || c.msRequestFullscreen;
+                if (req) req.call(c).catch(function() {});
+            }
         }
-    }
-    Module['ab3dToggleCanvasFullscreen'] = ab3dToggleCanvasFullscreen;
-    Module['ab3dFullscreenResizePending'] = 0;
-    var mark = function() { Module['ab3dFullscreenResizePending'] = 1; };
-    document.addEventListener('fullscreenchange', mark, false);
-    document.addEventListener('webkitfullscreenchange', mark, false);
-    window.addEventListener('keydown', function(e) {
-        if (e.code !== 'F11' && e.key !== 'F11' && e.keyCode !== 122) return;
-        e.preventDefault();
-        e.stopPropagation();
-        ab3dToggleCanvasFullscreen();
-    }, true);
-});
+        Module['ab3dToggleCanvasFullscreen'] = ab3dToggleCanvasFullscreen;
+        Module['ab3dFullscreenResizePending'] = 0;
+        function ab3dSyncCanvasSizeToClient() {
+            var c = Module['canvas'];
+            var w = 0;
+            var h = 0;
+            if (c) {
+                w = c.clientWidth | 0;
+                h = c.clientHeight | 0;
+            }
+            if (w < 1) w = window.innerWidth | 0;
+            if (h < 1) h = window.innerHeight | 0;
+            if (w < 1) w = 1;
+            if (h < 1) h = 1;
+            if (c) {
+                if ((c.width | 0) !== w) c.width = w;
+                if ((c.height | 0) !== h) c.height = h;
+            }
+            Module['ab3dFullscreenResizePending'] = 1;
+        }
+        Module['ab3dSyncCanvasSizeToClient'] = ab3dSyncCanvasSizeToClient;
+        var mark = function() { Module['ab3dFullscreenResizePending'] = 1; };
+        window.addEventListener('resize', mark, false);
+        if (window.visualViewport)
+            window.visualViewport.addEventListener('resize', mark, false);
+        document.addEventListener('fullscreenchange', mark, false);
+        document.addEventListener('webkitfullscreenchange', mark, false);
+        window.addEventListener('keydown', function(e) {
+            if (e.code !== 'F11' && e.key !== 'F11' && e.keyCode !== 122) return;
+            e.preventDefault();
+            e.stopPropagation();
+            ab3dToggleCanvasFullscreen();
+        }, true);
+    }));
+}
 
-EM_JS(void, display_emscripten_canvas_fullscreen_toggle, (void), {
-    if (Module['ab3dToggleCanvasFullscreen']) Module['ab3dToggleCanvasFullscreen']();
-});
+static void display_emscripten_canvas_fullscreen_toggle(void)
+{
+    MAIN_THREAD_EM_ASM(({
+        if (Module['ab3dToggleCanvasFullscreen'])
+            Module['ab3dToggleCanvasFullscreen']();
+    }));
+}
 
 /* Pick render_width/height from the nearest common aspect to screen.width/screen.height. */
-EM_JS(void, display_emscripten_apply_screen_aspect_resolution, (int *out_w, int *out_h), {
-    var screenW = screen.width;
-    var screenH = screen.height;
-    if (screenW < 1 || screenH < 1) {
-        screenW = window.innerWidth || 1920;
-        screenH = window.innerHeight || 1080;
-    }
-    var measured = screenW / screenH;
-    var common = [[16, 9], [16, 10], [3, 2], [4, 3], [21, 9], [32, 9]];
-    var bestIdx = 0;
-    var bestDiff = 1e9;
-    for (var i = 0; i < common.length; i++) {
-        var cw = common[i][0], ch = common[i][1];
-        var diff = Math.abs(measured - (cw / ch));
-        if (diff < bestDiff) {
-            bestDiff = diff;
-            bestIdx = i;
+static void display_emscripten_apply_screen_aspect_resolution(int *out_w,
+                                                              int *out_h)
+{
+    MAIN_THREAD_EM_ASM(({
+        var screenW = screen.width;
+        var screenH = screen.height;
+        if (screenW < 1 || screenH < 1) {
+            screenW = window.innerWidth || 1920;
+            screenH = window.innerHeight || 1080;
         }
-    }
-    /* Preset pixel sizes (same aspect as common[bestIdx]); clamped later in C if needed. */
-    var res = [
-        [1920, 1080],
-        [1920, 1200],
-        [1920, 1280],
-        [1920, 1440],
-        [2560, 1080],
-        [3840, 1080]
-    ];
-    var tw = res[bestIdx][0];
-    var th = res[bestIdx][1];
-    var h32 = (typeof HEAP32 !== 'undefined') ? HEAP32 : Module['HEAP32'];
-    h32[out_w >> 2] = tw;
-    h32[out_h >> 2] = th;
-});
+        var measured = screenW / screenH;
+        var common = [[16, 9], [16, 10], [3, 2], [4, 3], [21, 9], [32, 9]];
+        var bestIdx = 0;
+        var bestDiff = 1e9;
+        for (var i = 0; i < common.length; i++) {
+            var cw = common[i][0], ch = common[i][1];
+            var diff = Math.abs(measured - (cw / ch));
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                bestIdx = i;
+            }
+        }
+        /* Preset pixel sizes (same aspect as common[bestIdx]); clamped later in C if needed. */
+        var res = [
+            [1920, 1080],
+            [1920, 1200],
+            [1920, 1280],
+            [1920, 1440],
+            [2560, 1080],
+            [3840, 1080]
+        ];
+        var tw = res[bestIdx][0];
+        var th = res[bestIdx][1];
+        HEAP32[$0 >> 2] = tw;
+        HEAP32[$1 >> 2] = th;
+    }), out_w, out_h);
+}
 #endif
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -2799,9 +2831,57 @@ void display_handle_resize(void)
 void display_emscripten_frame_resize_poll(void)
 {
 #if defined(__EMSCRIPTEN__)
-    if (!g_sdl_ren) return;
+    if (!g_sdl_ren || !g_window) return;
+    int css_w = 0;
+    int css_h = 0;
+    int canvas_w = 0;
+    int canvas_h = 0;
+    MAIN_THREAD_EM_ASM({
+        var c = Module['canvas'];
+        var w = 0;
+        var h = 0;
+        var bw = 0;
+        var bh = 0;
+        if (c) {
+            w = c.clientWidth | 0;
+            h = c.clientHeight | 0;
+            bw = c.width | 0;
+            bh = c.height | 0;
+        }
+        if (w < 1) w = window.innerWidth | 0;
+        if (h < 1) h = window.innerHeight | 0;
+        if (w < 1) w = 1;
+        if (h < 1) h = 1;
+        HEAP32[$0 >> 2] = w;
+        HEAP32[$1 >> 2] = h;
+        HEAP32[$2 >> 2] = bw;
+        HEAP32[$3 >> 2] = bh;
+    }, &css_w, &css_h, &canvas_w, &canvas_h);
+
+    int win_w = 0;
+    int win_h = 0;
+    SDL_GetWindowSize(g_window, &win_w, &win_h);
+    int pending = 0;
+    if (css_w > 0 && css_h > 0 &&
+        (css_w != win_w || css_h != win_h ||
+         css_w != canvas_w || css_h != canvas_h)) {
+        MAIN_THREAD_EM_ASM({
+            if (Module['ab3dSyncCanvasSizeToClient']) {
+                Module['ab3dSyncCanvasSizeToClient']();
+                return;
+            }
+            var c = Module['canvas'];
+            if (c) {
+                if ((c.width | 0) !== $0) c.width = $0;
+                if ((c.height | 0) !== $1) c.height = $1;
+            }
+        }, css_w, css_h);
+        SDL_SetWindowSize(g_window, css_w, css_h);
+        pending = 1;
+    }
+
     SDL_PumpEvents();
-    int pending = EM_ASM_INT({
+    pending |= MAIN_THREAD_EM_ASM_INT({
         var v = Module['ab3dFullscreenResizePending'] | 0;
         Module['ab3dFullscreenResizePending'] = 0;
         return v;

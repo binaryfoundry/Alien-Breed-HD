@@ -348,6 +348,7 @@ int play_the_game_poll_level_text_input(GameState *state)
             case SDL_WINDOWEVENT_RESIZED:
             case SDL_WINDOWEVENT_SIZE_CHANGED:
                 display_handle_resize();
+                play_the_game_present_level_text(state, 255);
                 break;
             default:
                 break;
@@ -384,6 +385,7 @@ int play_the_game_drain_level_text_input(GameState *state)
             case SDL_WINDOWEVENT_RESIZED:
             case SDL_WINDOWEVENT_SIZE_CHANGED:
                 display_handle_resize();
+                play_the_game_present_level_text(state, 255);
                 break;
             default:
                 break;

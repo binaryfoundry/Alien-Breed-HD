@@ -76,12 +76,6 @@ static void em_frame(void)
             play_the_game_level_text_alpha_for_step(g_em_text_step));
         g_em_text_step++;
         if (g_em_text_step >= play_the_game_level_text_fade_steps()) {
-            g_em_phase = EM_PREP;
-        }
-        return;
-    case EM_PREP:
-        play_the_game_prepare_level(st, &g_em_copper_ready);
-        if (g_em_show_level_text) {
             if (play_the_game_drain_level_text_input(st) < 0) {
                 st->running = false;
                 st->finished_level = 0;
@@ -89,10 +83,13 @@ static void em_frame(void)
             } else {
                 g_em_phase = EM_TEXT_WAIT;
             }
-        } else {
-            game_loop_ctx_init(&g_em_gl_ctx, st);
-            g_em_phase = EM_GAME;
         }
+        return;
+    case EM_PREP:
+        play_the_game_prepare_level(st, &g_em_copper_ready);
+        game_loop_ctx_init(&g_em_gl_ctx, st);
+        g_em_gl_ctx.hidden_present_frames = g_em_show_level_text ? 2 : 0;
+        g_em_phase = EM_GAME;
         return;
     case EM_TEXT_WAIT:
     {
@@ -122,9 +119,7 @@ static void em_frame(void)
     case EM_TEXT_CLEAR:
         display_emscripten_frame_resize_poll();
         display_present_text_screen_alpha(0);
-        game_loop_ctx_init(&g_em_gl_ctx, st);
-        g_em_gl_ctx.hidden_present_frames = 2;
-        g_em_phase = EM_GAME;
+        g_em_phase = EM_PREP;
         return;
     case EM_GAME:
         game_loop_tick(st, &g_em_gl_ctx);
