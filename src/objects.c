@@ -144,6 +144,7 @@ static void enemy_apply_step_limits(const GameObject *obj,
                                     const EnemyParams *params,
                                     MoveContext *ctx);
 static int obj_type_to_enemy_index(int8_t obj_type);
+static int object_floor_render_offset_units(const GameObject *obj, int8_t obj_type);
 
 static void enemy_motion_sync_slots(const GameState *state)
 {
@@ -449,6 +450,175 @@ static int enemy_zone_from_ctx_room_or_obj(const GameState *state,
 
     if (zone < 0 || zone >= zone_slots) return -1;
     return zone;
+}
+
+static bool enemy_set_ctx_room_from_zone(GameState *state, MoveContext *ctx,
+                                         int zone_index)
+{
+    int zone_slots;
+    int32_t zone_off;
+
+    if (!state || !ctx || !state->level.zone_adds || !state->level.data)
+        return false;
+
+    zone_slots = level_zone_slot_count(&state->level);
+    if (zone_index < 0 || zone_index >= zone_slots)
+        return false;
+
+    zone_off = (int32_t)be32(state->level.zone_adds + (uint32_t)zone_index * 4u);
+    if (zone_off < 0)
+        return false;
+
+    ctx->objroom = (uint8_t *)(state->level.data + zone_off);
+    return true;
+}
+
+static int16_t enemy_zone_word_from_index(const GameState *state, int zone_index)
+{
+    int zone_slots;
+    int32_t zone_off;
+    const uint8_t *room;
+
+    if (!state || !state->level.zone_adds || !state->level.data)
+        return -1;
+
+    zone_slots = level_zone_slot_count(&state->level);
+    if (zone_index < 0 || zone_index >= zone_slots)
+        return -1;
+
+    zone_off = (int32_t)be32(state->level.zone_adds + (uint32_t)zone_index * 4u);
+    if (zone_off < 0)
+        return -1;
+
+    room = state->level.data + zone_off;
+    return (int16_t)((room[0] << 8) | room[1]);
+}
+
+static int enemy_zone_index_from_room(const GameState *state, const uint8_t *room)
+{
+    int zone;
+
+    if (!state || !room)
+        return -1;
+
+    zone = level_zone_index_from_room_ptr(&state->level, room);
+    if (zone < 0) {
+        int16_t zone_word = (int16_t)((room[0] << 8) | room[1]);
+        zone = level_connect_to_zone_index(&state->level, zone_word);
+    }
+    return zone;
+}
+
+static int enemy_type_uses_floor_y(int8_t obj_type)
+{
+    return obj_type_to_enemy_index(obj_type) >= 0 &&
+           obj_type != OBJ_NBR_FLYING_NASTY &&
+           obj_type != OBJ_NBR_EYEBALL;
+}
+
+static void enemy_sync_floor_y_from_zone(GameObject *obj, const GameState *state,
+                                         int zone_index, int8_t in_top)
+{
+    int32_t zone_off;
+    const uint8_t *room;
+    int32_t floor_h;
+    int render_offset;
+
+    if (!obj || !state || !state->level.zone_adds || !state->level.data)
+        return;
+    if (!enemy_type_uses_floor_y(obj->obj.number))
+        return;
+    if (zone_index < 0 || zone_index >= level_zone_slot_count(&state->level))
+        return;
+
+    zone_off = (int32_t)be32(state->level.zone_adds + (uint32_t)zone_index * 4u);
+    if (zone_off < 0)
+        return;
+
+    room = state->level.data + zone_off;
+    floor_h = be32(room + ZONE_OFF_FLOOR);
+    if (object_zone_use_upper(&state->level, zone_index, in_top))
+        floor_h = be32(room + ZONE_OFF_UPPER_FLOOR);
+
+    render_offset = object_floor_render_offset_units(obj, obj->obj.number);
+    obj_sw(obj->raw + 4, (int16_t)((floor_h >> 7) - render_offset));
+}
+
+static bool enemy_zone_contains_point(const GameState *state, int zone_index,
+                                      int32_t x, int32_t z)
+{
+    int16_t zone_word;
+    int found_zone;
+
+    if (!state || zone_index < 0 ||
+        zone_index >= level_zone_slot_count(&state->level))
+        return false;
+
+    zone_word = enemy_zone_word_from_index(state, zone_index);
+    found_zone = level_find_zone_for_point(&state->level, x, z, zone_word);
+    return found_zone == zone_index;
+}
+
+static void enemy_commit_move_context(GameObject *obj, GameState *state,
+                                      MoveContext *ctx)
+{
+    int cid;
+    int zone_slots;
+    int old_zone;
+    int8_t old_in_top;
+    int ctx_zone = -1;
+    int final_zone;
+    int8_t final_in_top;
+    bool cancelled_to_old;
+    bool forced_rollback = false;
+
+    if (!obj || !state || !ctx)
+        return;
+
+    zone_slots = level_zone_slot_count(&state->level);
+    old_zone = object_resolve_zone_index(&state->level, OBJ_ZONE(obj));
+    old_in_top = obj->obj.in_top;
+    if (ctx->objroom) {
+        ctx_zone = enemy_zone_index_from_room(state, ctx->objroom);
+    }
+    cancelled_to_old = (ctx->newx == ctx->oldx && ctx->newz == ctx->oldz);
+
+    /* Amiga enemy scripts commit objZone from objroom after MoveObject/CheckTeleport.
+     * Do not recover by searching every zone for newx/newz here: that can bless a
+     * wall-slide/crowd-cancel position that was never reached through a legal exit. */
+    final_zone = cancelled_to_old ? old_zone : ctx_zone;
+    final_in_top = cancelled_to_old ? old_in_top : ctx->stood_in_top;
+
+    if (final_zone < 0 ||
+        !enemy_zone_contains_point(state, final_zone, ctx->newx, ctx->newz)) {
+        ctx->newx = ctx->oldx;
+        ctx->newz = ctx->oldz;
+        ctx->hitwall = 1;
+        final_zone = old_zone;
+        final_in_top = old_in_top;
+        forced_rollback = true;
+    }
+
+    if (forced_rollback)
+        enemy_motion_zero_slot(enemy_motion_slot_index(state, obj));
+
+    if (final_zone >= 0 && final_zone < zone_slots) {
+        if (!object_zone_use_upper(&state->level, final_zone, final_in_top))
+            final_in_top = 0;
+
+        enemy_set_ctx_room_from_zone(state, ctx, final_zone);
+        OBJ_SET_ZONE(obj, (int16_t)final_zone);
+        obj->obj.in_top = final_in_top;
+        enemy_sync_floor_y_from_zone(obj, state, final_zone, final_in_top);
+    }
+
+    cid = (int)OBJ_CID(obj);
+    if (state->level.object_points && cid >= 0 &&
+        cid < (int)state->level.num_object_points) {
+        uint8_t *pts = state->level.object_points + (size_t)cid * 8u;
+        obj_sw(pts, (int16_t)ctx->newx);
+        obj_sw(pts + 4, (int16_t)ctx->newz);
+    }
 }
 
 static bool enemy_try_zone_teleport(GameObject *obj, GameState *state, MoveContext *ctx)
@@ -1364,21 +1534,7 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
 
     }
 
-    if (state->level.object_points) {
-        uint8_t *pts = state->level.object_points + cid * 8;
-        obj_sw(pts, (int16_t)ctx.newx);
-        obj_sw(pts + 4, (int16_t)ctx.newz);
-    }
-    if (ctx.objroom && state->level.data) {
-        int new_zone = level_zone_index_from_room_ptr(&state->level, ctx.objroom);
-        if (new_zone < 0) {
-            int16_t room_zone_word = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
-            new_zone = level_connect_to_zone_index(&state->level, room_zone_word);
-        }
-        if (new_zone >= 0 && new_zone < zone_slots)
-            OBJ_SET_ZONE(obj, (int16_t)new_zone);
-        obj->obj.in_top = ctx.stood_in_top;
-    }
+    enemy_commit_move_context(obj, state, &ctx);
 
     if (ctx.hitwall) {
         /* FlyingScalyBall.s / EyeBall.s keep ObjTimer unchanged on wall hit
@@ -1958,33 +2114,14 @@ void objects_update(GameState *state)
 
                         int world_h = object_floor_render_offset_units(obj, obj_type);
 
-                        /* Target Y in the same coordinate space as player_fall
-                         * (floor_h minus the per-type height offset, identical
-                         * to how the player computes s_tyoff = floor_h - s_height). */
-                        int32_t tyoff = floor_h - (int32_t)world_h * 128;
-
-                        /* Current position in floor-unit space (raw[4] is the >>7
-                         * compressed form of the same coordinate). */
-                        int32_t obj_yoff = (int32_t)obj_w(obj->raw + 4) << 7;
-
-                        if (obj_type_to_enemy_index(obj_type) >= 0) {
-                            /* Vertical velocity: reuse ENEMY_OBJ_YVEL_OFF (raw+48).
-                             * Ground enemies never write this field; flying enemies
-                             * (EyeBall, FlyingScalyBall) are excluded by !flying_hover. */
-                            int32_t obj_yvel = (int32_t)OBJ_TD_W(obj, ENEMY_OBJ_YVEL_OFF);
-
-                            /* Apply the same gravity routine the player uses. */
-                            player_fall(&obj_yoff, &obj_yvel, tyoff, INT32_MAX, false);
-
-                            /* Clamp velocity to int16 range before storing back. */
-                            if (obj_yvel >  32767) obj_yvel =  32767;
-                            if (obj_yvel < -32768) obj_yvel = -32768;
-                            OBJ_SET_TD_W(obj, ENEMY_OBJ_YVEL_OFF, (int16_t)obj_yvel);
-                            obj_sw(obj->raw + 4, (int16_t)(obj_yoff >> 7));
-                        } else {
-                            /* Non-enemy objects should track floor height directly. */
-                            obj_sw(obj->raw + 4, (int16_t)(tyoff >> 7));
-                        }
+                        /* Amiga ItsA* handlers refresh ground object Y directly:
+                         *   move.l ToZoneFloor/ToUpperFloor,d0
+                         *   asr.l #7,d0
+                         *   sub.w #nasheight,d0
+                         *   move.w d0,4(a0)
+                         * Flying enemies keep their scripted objyvel bob and are
+                         * excluded above. */
+                        obj_sw(obj->raw + 4, (int16_t)((floor_h >> 7) - world_h));
                     }
                 }
             }
@@ -2595,24 +2732,7 @@ static int32_t robot_track_target(GameObject *obj, const EnemyParams *params,
             move_object(&ctx, &state->level);
         }
 
-        if (state->level.object_points) {
-            int cid = (int)OBJ_CID(obj);
-            uint8_t *pts = state->level.object_points + cid * 8;
-            obj_sw(pts, (int16_t)ctx.newx);
-            obj_sw(pts + 4, (int16_t)ctx.newz);
-        }
-
-        if (ctx.objroom && state->level.data) {
-            int zone_slots = level_zone_slot_count(&state->level);
-            int new_zone = level_zone_index_from_room_ptr(&state->level, ctx.objroom);
-            if (new_zone < 0) {
-                int16_t room_zone_word = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
-                new_zone = level_connect_to_zone_index(&state->level, room_zone_word);
-            }
-            if (new_zone >= 0 && new_zone < zone_slots)
-                OBJ_SET_ZONE(obj, (int16_t)new_zone);
-            obj->obj.in_top = ctx.stood_in_top;
-        }
+        enemy_commit_move_context(obj, state, &ctx);
     }
 
     {
@@ -2795,23 +2915,7 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
 
     }
 
-    if (state->level.object_points) {
-        int cid = (int)OBJ_CID(obj);
-        uint8_t *pts = state->level.object_points + cid * 8;
-        obj_sw(pts, (int16_t)ctx.newx);
-        obj_sw(pts + 4, (int16_t)ctx.newz);
-    }
-
-    if (ctx.objroom && state->level.data) {
-        int new_zone = level_zone_index_from_room_ptr(&state->level, ctx.objroom);
-        if (new_zone < 0) {
-            int16_t room_zone_word = (int16_t)((ctx.objroom[0] << 8) | ctx.objroom[1]);
-            new_zone = level_connect_to_zone_index(&state->level, room_zone_word);
-        }
-        if (new_zone >= 0 && new_zone < zone_slots)
-            OBJ_SET_ZONE(obj, (int16_t)new_zone);
-        obj->obj.in_top = ctx.stood_in_top;
-    }
+    enemy_commit_move_context(obj, state, &ctx);
 
     return dist;
 }
