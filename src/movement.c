@@ -1201,13 +1201,9 @@ static void find_room(MoveContext* ctx, LevelState* level,
                             target_in_top = (cross_y < target_roof) ? 1 : 0;
                         }
 
-                        {
-                            int8_t pass_in_top = target_in_top;
-                            if (!transition_height_ok_zone_for_mover(ctx, cross_y, level, connect_index,
-                                                                    target_zone, &pass_in_top)) {
-                                continue;
-                            }
-                        }
+                        /* ObjectMove.s FindRoom has its floor/roof passability
+                         * checks commented out here; wall blocking has already
+                         * been handled by checkwalls/checkotherwalls above. */
                     }
 
                     {

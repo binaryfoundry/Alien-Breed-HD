@@ -1265,21 +1265,6 @@ static bool enemy_player_vertical_overlap(const GameObject *obj,
     }
 }
 
-static bool enemy_step_within_limit(const MoveContext *ctx, int32_t max_step)
-{
-    if (!ctx) return true;
-    if (max_step < 0) max_step = -max_step;
-    max_step += 16; /* allow some extra room for wall-slide adjustments */
-
-    {
-        int64_t dx = (int64_t)ctx->newx - (int64_t)ctx->oldx;
-        int64_t dz = (int64_t)ctx->newz - (int64_t)ctx->oldz;
-        int64_t moved_sq = dx * dx + dz * dz;
-        int64_t max_sq = (int64_t)max_step * (int64_t)max_step;
-        return moved_sq <= max_sq;
-    }
-}
-
 static int32_t enemy_player_overlap_depth_at(const GameObject *obj,
                                              const PlayerState *plr,
                                              int8_t player_type,
@@ -1345,10 +1330,6 @@ static void enemy_prevent_deeper_player_overlap(const GameObject *obj, const Gam
  */
 #define ENEMY_STEP_UP_MIN_DEFAULT     (40 * 256)
 #define ENEMY_STEP_DOWN_MIN_DEFAULT   (40 * 256)
-/* Clamp ground-enemy MoveObject correction against a fixed amortized tick budget.
- * Using speed*temp_frames makes movement acceptance depend on frame dips/lumps,
- * which can create "stuck at 120fps, released at 15fps" behavior. */
-#define ENEMY_STEP_CLAMP_TICKS 3
 
 static void enemy_apply_step_limits(const GameObject *obj,
                                     const EnemyParams *params,
@@ -1510,16 +1491,6 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
         } else {
             /* Amiga enemy scripts make one MoveObject call per movement tick. */
             move_object(&ctx, &state->level);
-        }
-
-        /* Robot.s does not clamp MoveObject displacement here; clamping can also
-         * freeze flyers against corners when MoveObject returns a legal wall-contact
-         * correction larger than their nominal per-tick speed. */
-        if (obj->obj.number != OBJ_NBR_ROBOT && !flying_hover) {
-            if (!enemy_step_within_limit(&ctx, (int32_t)speed * ENEMY_STEP_CLAMP_TICKS)) {
-                ctx.newx = ctx.oldx;
-                ctx.newz = ctx.oldz;
-            }
         }
 
         /* Robot.s does not run the extra anti-overlap guard; keeping it disabled
@@ -2896,13 +2867,6 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
             move_object(&ctx, &state->level);
         }
 
-        /* Keep the anti-jump clamp for ground chasers only. */
-        if (!flying_hover &&
-            !enemy_step_within_limit(&ctx, (int32_t)speed * ENEMY_STEP_CLAMP_TICKS)) {
-            ctx.newx = ctx.oldx;
-            ctx.newz = ctx.oldz;
-        }
-
         /* Robot.s does not run the extra anti-overlap guard; keeping it disabled
          * here avoids mech stalls at close range in parity-critical battles. */
         if (obj->obj.number != OBJ_NBR_ROBOT && !flying_hover) {
@@ -2921,10 +2885,158 @@ static int32_t enemy_track_target_with_turn(GameObject *obj, const EnemyParams *
     return dist;
 }
 
+static int16_t enemy_exact_facing_to_point(int16_t current_facing,
+                                           int32_t origin_x, int32_t origin_z,
+                                           int32_t target_x, int32_t target_z)
+{
+    int32_t dx = target_x - origin_x;
+    int32_t dz = target_z - origin_z;
+    double angle_rad;
+    int16_t target_angle;
+
+    if (dx == 0 && dz == 0)
+        return current_facing;
+
+    angle_rad = atan2((double)-dx, (double)-dz);
+    target_angle = (int16_t)(angle_rad * (4096.0 / (2.0 * 3.14159265)));
+    return (int16_t)((target_angle * 2) & ANGLE_MASK);
+}
+
+static void enemy_motion_step_towards_point_range(const GameObject *obj,
+                                                  const GameState *state,
+                                                  MoveContext *ctx,
+                                                  int32_t target_x,
+                                                  int32_t target_z,
+                                                  int32_t speed_units,
+                                                  int32_t range_units)
+{
+    int32_t dx;
+    int32_t dz;
+    int32_t dist;
+    int32_t move_dist;
+    int slot;
+
+    if (!ctx)
+        return;
+
+    dx = target_x - ctx->oldx;
+    dz = target_z - ctx->oldz;
+    dist = calc_dist_euclidean(dx, dz);
+    slot = enemy_motion_slot_index(state, obj);
+
+    if (range_units < 0)
+        range_units = 0;
+    if (dist <= range_units) {
+        ctx->newx = ctx->oldx;
+        ctx->newz = ctx->oldz;
+        enemy_motion_zero_slot(slot);
+        return;
+    }
+
+    if (speed_units < 0)
+        speed_units = -speed_units;
+    move_dist = dist - range_units;
+    if (move_dist > speed_units)
+        move_dist = speed_units;
+    if (move_dist <= 0) {
+        ctx->newx = ctx->oldx;
+        ctx->newz = ctx->oldz;
+        enemy_motion_zero_slot(slot);
+        return;
+    }
+
+    enemy_motion_step_towards_point(obj, state, ctx, target_x, target_z, move_dist);
+}
+
+static int32_t mutant_marine_track_target(GameObject *obj,
+                                          const EnemyParams *params,
+                                          GameState *state,
+                                          int player_num,
+                                          bool apply_translation)
+{
+    PlayerState *plr = (player_num == 1) ? &state->plr1 : &state->plr2;
+    int16_t obj_x = 0, obj_z = 0;
+    int32_t target_x;
+    int32_t target_z;
+    int32_t dx;
+    int32_t dz;
+    int32_t dist;
+    int16_t facing;
+    MoveContext ctx;
+    int zone_slots;
+
+    get_object_pos(&state->level, (int)OBJ_CID(obj), &obj_x, &obj_z);
+    target_x = (int32_t)plr->p_xoff;
+    target_z = (int32_t)plr->p_zoff;
+    dx = target_x - obj_x;
+    dz = target_z - obj_z;
+    dist = calc_dist_euclidean(dx, dz);
+
+    move_context_init(&ctx);
+    ctx.oldx = obj_x;
+    ctx.oldz = obj_z;
+    ctx.thing_height = params->thing_height;
+    zone_slots = level_zone_slot_count(&state->level);
+    {
+        int32_t move_y = enemy_move_y_for_context(obj, params, state, zone_slots);
+        ctx.oldy = move_y;
+        ctx.newy = move_y;
+    }
+    enemy_apply_step_limits(obj, params, &ctx);
+    ctx.extlen = params->extlen;
+    ctx.awayfromwall = params->awayfromwall;
+    ctx.wall_flags = 0x0200; /* MutantMarine.s HeadTowardsAng path sets wallflags #%1000000000. */
+    ctx.collide_flags = 0xFFDE1;
+    ctx.coll_id = OBJ_CID(obj);
+    ctx.pos_shift = 0;
+    ctx.stood_in_top = obj->obj.in_top;
+
+    if (OBJ_ZONE(obj) >= 0 && state->level.zone_adds && state->level.data) {
+        int src_zone = level_connect_to_zone_index(&state->level, OBJ_ZONE(obj));
+        if (src_zone < 0 && OBJ_ZONE(obj) < zone_slots)
+            src_zone = OBJ_ZONE(obj);
+        if (src_zone >= 0 && src_zone < zone_slots) {
+            int32_t zo = (int32_t)be32(state->level.zone_adds + (uint32_t)src_zone * 4u);
+            ctx.objroom = (uint8_t *)(state->level.data + zo);
+        }
+    }
+
+    facing = enemy_exact_facing_to_point(NASTY_FACING(*obj),
+                                        ctx.oldx, ctx.oldz,
+                                        target_x, target_z);
+    NASTY_SET_FACING(*obj, facing);
+
+    if (!enemy_try_zone_teleport(obj, state, &ctx)) {
+        if (apply_translation) {
+            int16_t speed = NASTY_MAXSPD(*obj);
+            if (speed == 0)
+                speed = 6;
+            /* MutantMarine.s attack uses HeadTowardsAng with Range=80. */
+            enemy_motion_step_towards_point_range(obj, state, &ctx,
+                                                  target_x, target_z,
+                                                  (int32_t)speed * (int32_t)state->temp_frames,
+                                                  80);
+        } else {
+            ctx.newx = ctx.oldx;
+            ctx.newz = ctx.oldz;
+            enemy_motion_zero_slot(enemy_motion_slot_index(state, obj));
+        }
+
+        move_object(&ctx, &state->level);
+    }
+
+    enemy_commit_move_context(obj, state, &ctx);
+    return dist;
+}
+
 static int32_t marine_track_target(GameObject *obj, const EnemyParams *params,
                                    GameState *state, int player_num,
                                    bool apply_translation)
 {
+    if (obj && obj->obj.number == OBJ_NBR_MARINE)
+        return mutant_marine_track_target(obj, params, state, player_num,
+                                          apply_translation);
+
     return enemy_track_target_with_turn(obj, params, state, player_num,
                                         apply_translation, 120);
 }
