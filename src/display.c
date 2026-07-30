@@ -214,14 +214,12 @@ static void         display_hud_digits_ensure_loaded(void);
 #define DISPLAY_ASCII_SCALE_ONE       256
 #define DISPLAY_TEXT_MAX_LINES        32
 #define DISPLAY_TEXT_MAX_CHARS        128
-#define DISPLAY_TEXT_MIN_WRAP_COLS    8
-#define DISPLAY_TEXT_MAX_WRAPS_PER_LINE \
-    (((DISPLAY_TEXT_MAX_CHARS - 1) + DISPLAY_TEXT_MIN_WRAP_COLS - 1) / DISPLAY_TEXT_MIN_WRAP_COLS)
-#define DISPLAY_TEXT_WRAP_MAX_RUNS    (DISPLAY_TEXT_MAX_LINES * DISPLAY_TEXT_MAX_WRAPS_PER_LINE)
+#define DISPLAY_TEXT_LAYOUT_MAX_RUNS  DISPLAY_TEXT_MAX_LINES
 static SDL_Texture *g_ascii_font_tex;
 static int          g_ascii_font_tex_w;
 static int          g_ascii_font_tex_h;
 static int          g_ascii_font_load_attempted;
+static int          g_ascii_font_mipmap_ok;
 static char         g_text_lines[DISPLAY_TEXT_MAX_LINES][DISPLAY_TEXT_MAX_CHARS];
 static uint8_t      g_text_line_used[DISPLAY_TEXT_MAX_LINES];
 static uint8_t      g_text_line_alpha[DISPLAY_TEXT_MAX_LINES];
@@ -1057,6 +1055,15 @@ static void display_gl_texture_blit(SDL_Texture *tex, const SDL_Rect *src_opt, c
         return;
     (void)tw_s;
     (void)th_s;
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+    if (tex == g_ascii_font_tex && g_ascii_font_mipmap_ok &&
+        g_gl_tex_parameteri) {
+        g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_MIN_FILTER,
+                            (GLint)DGL_LINEAR_MIPMAP_LINEAR);
+        g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_MAG_FILTER,
+                            (GLint)GL_NEAREST);
+    }
+#endif
     int tw = 0, th = 0;
     if (SDL_QueryTexture(tex, NULL, NULL, &tw, &th) != 0 || tw < 1 || th < 1) {
         SDL_GL_UnbindTexture(tex);
@@ -1601,6 +1608,37 @@ static void display_ascii_font_free(void)
     g_ascii_font_tex_w = 0;
     g_ascii_font_tex_h = 0;
     g_ascii_font_load_attempted = 0;
+    g_ascii_font_mipmap_ok = 0;
+}
+
+static void display_ascii_font_enable_scaling(void)
+{
+    if (!g_ascii_font_tex) return;
+
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+    SDL_SetTextureScaleMode(g_ascii_font_tex, SDL_ScaleModeNearest);
+
+    if (g_gl_unpack_ok && g_gl_hud_ok) {
+        if (!g_gl_generate_mipmap || !g_gl_tex_parameteri)
+            display_load_gl_mipmap_procs();
+        if (g_gl_generate_mipmap && g_gl_tex_parameteri) {
+            float tw = 0.0f, th = 0.0f;
+            if (SDL_GL_BindTexture(g_ascii_font_tex, &tw, &th) == 0) {
+                g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_MIN_FILTER,
+                                    (GLint)DGL_LINEAR_MIPMAP_LINEAR);
+                g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_MAG_FILTER,
+                                    (GLint)GL_NEAREST);
+                g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_WRAP_S,
+                                    (GLint)DGL_CLAMP_TO_EDGE);
+                g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_WRAP_T,
+                                    (GLint)DGL_CLAMP_TO_EDGE);
+                g_gl_generate_mipmap(DGL_TEXTURE_2D);
+                SDL_GL_UnbindTexture(g_ascii_font_tex);
+                g_ascii_font_mipmap_ok = 1;
+            }
+        }
+    }
+#endif
 }
 
 static void display_ascii_font_ensure_loaded(void)
@@ -1618,6 +1656,7 @@ static void display_ascii_font_ensure_loaded(void)
         printf("[DISPLAY] ASCII font: unexpected atlas size %dx%d for %s\n",
                g_ascii_font_tex_w, g_ascii_font_tex_h, DISPLAY_ASCII_FONT_PATH);
     }
+    display_ascii_font_enable_scaling();
 }
 
 typedef struct DisplayTextRun {
@@ -1734,60 +1773,8 @@ static int display_text_append_run(DisplayTextRun *runs, int max_runs,
     return 1;
 }
 
-static int display_text_append_wrapped(DisplayTextRun *runs, int max_runs,
-                                       int *count, const char *text, int max_cols,
-                                       int source_line, Uint8 alpha)
-{
-    int start = 0;
-    int len = 0;
-    display_text_trim_span(text, &start, &len);
-    if (len < 1) {
-        return display_text_append_run(runs, max_runs, count, text, 0, 0,
-                                       source_line, alpha);
-    }
-
-    if (max_cols < DISPLAY_TEXT_MIN_WRAP_COLS)
-        max_cols = DISPLAY_TEXT_MIN_WRAP_COLS;
-
-    int pos = start;
-    int end = start + len;
-    while (pos < end) {
-        while (pos < end && (text[pos] == ' ' || text[pos] == '\t')) pos++;
-        if (pos >= end) break;
-
-        int run_end = end;
-        if (run_end - pos > max_cols) {
-            int limit = pos + max_cols;
-            int break_at = -1;
-            for (int j = limit; j > pos; j--) {
-                if (text[j] == ' ' || text[j] == '\t') {
-                    break_at = j;
-                    break;
-                }
-            }
-            run_end = (break_at > pos) ? break_at : limit;
-        }
-
-        int run_len = run_end - pos;
-        while (run_len > 0 &&
-               (text[pos + run_len - 1] == ' ' || text[pos + run_len - 1] == '\t')) {
-            run_len--;
-        }
-        if (run_len > 0 &&
-            !display_text_append_run(runs, max_runs, count, text, pos, run_len,
-                                     source_line, alpha)) {
-            return 0;
-        }
-
-        pos = run_end;
-    }
-
-    return 1;
-}
-
-static int display_text_build_wrapped_layout(DisplayTextRun *runs, int max_runs,
-                                             int max_cols, int collapse_blank_rows,
-                                             int *out_longest_chars)
+static int display_text_build_line_layout(DisplayTextRun *runs, int max_runs,
+                                          int *out_longest_chars)
 {
     int first_line = -1;
     int last_line = -1;
@@ -1802,23 +1789,18 @@ static int display_text_build_wrapped_layout(DisplayTextRun *runs, int max_runs,
     int count = 0;
     int longest = 1;
     for (int i = first_line; i <= last_line; i++) {
+        int start = 0;
+        int len = 0;
+        display_text_trim_span(g_text_lines[i], &start, &len);
         if (!g_text_line_used[i] || display_ascii_text_is_blank(g_text_lines[i])) {
-            if (!collapse_blank_rows &&
-                !display_text_append_run(runs, max_runs, &count, g_text_lines[i],
-                                         0, 0, i, g_text_line_alpha[i])) {
-                return 0;
-            }
-            continue;
+            start = 0;
+            len = 0;
         }
-
-        int before = count;
-        if (!display_text_append_wrapped(runs, max_runs, &count, g_text_lines[i],
-                                         max_cols, i, g_text_line_alpha[i])) {
+        if (!display_text_append_run(runs, max_runs, &count, g_text_lines[i],
+                                     start, len, i, g_text_line_alpha[i])) {
             return 0;
         }
-        for (int j = before; j < count; j++) {
-            if (runs[j].len > longest) longest = runs[j].len;
-        }
+        if (len > longest) longest = len;
     }
 
     if (out_longest_chars) *out_longest_chars = longest;
@@ -1853,60 +1835,38 @@ static int display_text_layout_in_rect(SDL_Rect r, DisplayTextRun *runs,
         margin_y = 0;
     }
 
-    int run_count = 0;
-    int scale_q = DISPLAY_ASCII_SCALE_ONE;
-    static const int text_scale_candidates_q[] = {
-        DISPLAY_ASCII_SCALE_ONE * 4,
-        DISPLAY_ASCII_SCALE_ONE * 3,
-        DISPLAY_ASCII_SCALE_ONE * 2,
-        DISPLAY_ASCII_SCALE_ONE * 3 / 2,
-        DISPLAY_ASCII_SCALE_ONE * 5 / 4,
-        DISPLAY_ASCII_SCALE_ONE,
-        DISPLAY_ASCII_SCALE_ONE * 7 / 8,
-        DISPLAY_ASCII_SCALE_ONE * 3 / 4,
-        DISPLAY_ASCII_SCALE_ONE * 5 / 8,
-        DISPLAY_ASCII_SCALE_ONE / 2,
-        DISPLAY_ASCII_SCALE_ONE * 3 / 8,
-        DISPLAY_ASCII_SCALE_ONE / 4
-    };
+    int longest_chars = 1;
+    int run_count = display_text_build_line_layout(runs, max_runs,
+                                                   &longest_chars);
+    if (run_count < 1) return 0;
 
-    for (int collapse_blanks = 0; collapse_blanks <= 1 && run_count == 0; collapse_blanks++) {
-        int num_candidates = (int)(sizeof(text_scale_candidates_q) /
-                                   sizeof(text_scale_candidates_q[0]));
-        for (int c = 0; c < num_candidates; c++) {
-            int candidate_q = text_scale_candidates_q[c];
-            int xadvance = display_text_scaled_px(DISPLAY_ASCII_XADVANCE, candidate_q);
-            int line_h = display_text_scaled_px(DISPLAY_ASCII_LINE_ADVANCE, candidate_q);
-            int max_cols = avail_w / xadvance;
-            if (max_cols < DISPLAY_TEXT_MIN_WRAP_COLS)
-                max_cols = DISPLAY_TEXT_MIN_WRAP_COLS;
-            int candidate_longest = 1;
-            int candidate_count = display_text_build_wrapped_layout(
-                runs, max_runs, max_cols,
-                collapse_blanks, &candidate_longest);
-            if (candidate_count < 1) continue;
-
-            int total_h = candidate_count * line_h;
-            int total_w = display_text_span_width_px_q(candidate_longest, candidate_q);
-            if (total_h <= avail_h && total_w <= avail_w) {
-                run_count = candidate_count;
-                scale_q = candidate_q;
-                break;
-            }
-        }
+    int scale_q = DISPLAY_ASCII_SCALE_ONE * 4;
+    if (longest_chars > 0) {
+        int64_t natural_w = (int64_t)longest_chars *
+                            (int64_t)DISPLAY_ASCII_XADVANCE;
+        int width_q = (natural_w > 0) ?
+            (int)(((int64_t)avail_w * DISPLAY_ASCII_SCALE_ONE) / natural_w) :
+            scale_q;
+        if (width_q < scale_q) scale_q = width_q;
     }
+    if (run_count > 0) {
+        int64_t natural_h = (int64_t)run_count *
+                            (int64_t)DISPLAY_ASCII_LINE_ADVANCE;
+        int height_q = (natural_h > 0) ?
+            (int)(((int64_t)avail_h * DISPLAY_ASCII_SCALE_ONE) / natural_h) :
+            scale_q;
+        if (height_q < scale_q) scale_q = height_q;
+    }
+    if (scale_q < 1) scale_q = 1;
 
-    if (run_count < 1) {
-        int fallback_scale_q = DISPLAY_ASCII_SCALE_ONE / 4;
-        int max_cols = avail_w / display_text_scaled_px(DISPLAY_ASCII_XADVANCE,
-                                                        fallback_scale_q);
-        if (max_cols < DISPLAY_TEXT_MIN_WRAP_COLS)
-            max_cols = DISPLAY_TEXT_MIN_WRAP_COLS;
-        int fallback_longest = 1;
-        run_count = display_text_build_wrapped_layout(
-            runs, max_runs, max_cols, 1, &fallback_longest);
-        scale_q = fallback_scale_q;
-        if (run_count < 1) return 0;
+    while (scale_q > 1) {
+        int total_h = run_count *
+                      display_text_scaled_px(DISPLAY_ASCII_LINE_ADVANCE,
+                                             scale_q);
+        int total_w = display_text_span_width_px_q(longest_chars, scale_q);
+        if (total_h <= avail_h && total_w <= avail_w)
+            break;
+        scale_q--;
     }
 
     int line_h = display_text_scaled_px(DISPLAY_ASCII_LINE_ADVANCE, scale_q);
@@ -1931,7 +1891,7 @@ static void display_text_screen_draw_in_rect(Uint8 alpha, SDL_Rect r)
     display_ascii_font_ensure_loaded();
     if (!g_ascii_font_tex) return;
 
-    DisplayTextRun runs[DISPLAY_TEXT_WRAP_MAX_RUNS];
+    DisplayTextRun runs[DISPLAY_TEXT_LAYOUT_MAX_RUNS];
     int run_count = 0;
     int scale_q = DISPLAY_ASCII_SCALE_ONE;
     int line_h = DISPLAY_ASCII_LINE_ADVANCE;
@@ -1940,7 +1900,7 @@ static void display_text_screen_draw_in_rect(Uint8 alpha, SDL_Rect r)
     int margin_x = 0;
     int margin_y = 0;
 
-    if (!display_text_layout_in_rect(r, runs, DISPLAY_TEXT_WRAP_MAX_RUNS,
+    if (!display_text_layout_in_rect(r, runs, DISPLAY_TEXT_LAYOUT_MAX_RUNS,
                                      &run_count, &scale_q, &line_h, &draw_h,
                                      &top, &margin_x, &margin_y)) {
         return;
@@ -2332,7 +2292,7 @@ static int display_window_point_to_output(int window_x, int window_y,
 int display_text_line_at_point(int window_x, int window_y, int title_screen,
                                int *out_line)
 {
-    DisplayTextRun runs[DISPLAY_TEXT_WRAP_MAX_RUNS];
+    DisplayTextRun runs[DISPLAY_TEXT_LAYOUT_MAX_RUNS];
     SDL_Rect r;
     int px = 0;
     int py = 0;
@@ -2369,7 +2329,7 @@ int display_text_line_at_point(int window_x, int window_y, int title_screen,
         r = g_present_dst_rect;
     }
 
-    if (!display_text_layout_in_rect(r, runs, DISPLAY_TEXT_WRAP_MAX_RUNS,
+    if (!display_text_layout_in_rect(r, runs, DISPLAY_TEXT_LAYOUT_MAX_RUNS,
                                      &run_count, &scale_q, &line_h, &draw_h,
                                      &top, &margin_x, NULL)) {
         return 0;
