@@ -322,11 +322,23 @@ static void game_loop_refresh_autosave_info(GameLoopCtx *ctx)
     }
 }
 
-static int game_loop_main_menu_item_enabled(const GameLoopCtx *ctx, int item)
+static int game_loop_main_menu_item_visible(const GameLoopCtx *ctx, int item)
 {
     if (item == INGAME_MENU_CONTINUE && ctx && ctx->ingame_menu_frontend) {
         return ctx->ingame_menu_autosave_count > 0;
     }
+#if defined(__EMSCRIPTEN__)
+    if (item == INGAME_MENU_EXIT) {
+        return 0;
+    }
+#endif
+    return 1;
+}
+
+static int game_loop_main_menu_item_enabled(const GameLoopCtx *ctx, int item)
+{
+    if (!game_loop_main_menu_item_visible(ctx, item))
+        return 0;
     if (item == INGAME_MENU_AUTOSAVES) {
         return ctx && ctx->ingame_menu_autosave_count > 0;
     }
@@ -424,7 +436,7 @@ static int game_loop_main_menu_item_at_line(const GameLoopCtx *ctx, int line)
 {
     int row = 2;
 
-    if (game_loop_main_menu_item_enabled(ctx, INGAME_MENU_CONTINUE)) {
+    if (game_loop_main_menu_item_visible(ctx, INGAME_MENU_CONTINUE)) {
         if (line == row) return INGAME_MENU_CONTINUE;
         row++;
     }
@@ -442,7 +454,9 @@ static int game_loop_main_menu_item_at_line(const GameLoopCtx *ctx, int line)
     row++;
     if (line == row) return INGAME_MENU_FPS_COUNTER;
     row++;
-    if (line == row) return INGAME_MENU_EXIT;
+    if (game_loop_main_menu_item_visible(ctx, INGAME_MENU_EXIT) &&
+        line == row)
+        return INGAME_MENU_EXIT;
     return -1;
 }
 
@@ -564,7 +578,7 @@ static void game_loop_draw_ingame_menu(GameState *state, const GameLoopCtx *ctx)
 
     int row = 2;
 
-    if (game_loop_main_menu_item_enabled(ctx, INGAME_MENU_CONTINUE)) {
+    if (game_loop_main_menu_item_visible(ctx, INGAME_MENU_CONTINUE)) {
         display_draw_line_of_text((ctx->ingame_menu_selected == INGAME_MENU_CONTINUE) ?
                                   "> CONTINUE" : "  CONTINUE", row);
         row++;
@@ -597,8 +611,10 @@ static void game_loop_draw_ingame_menu(GameState *state, const GameLoopCtx *ctx)
     display_draw_line_of_text(line, row);
     row++;
 
-    display_draw_line_of_text((ctx->ingame_menu_selected == INGAME_MENU_EXIT) ?
-                              "> EXIT GAME" : "  EXIT GAME", row);
+    if (game_loop_main_menu_item_visible(ctx, INGAME_MENU_EXIT)) {
+        display_draw_line_of_text((ctx->ingame_menu_selected == INGAME_MENU_EXIT) ?
+                                  "> EXIT GAME" : "  EXIT GAME", row);
+    }
     game_loop_present_menu(state, ctx);
 }
 
