@@ -48,8 +48,9 @@ Sound conversion pipeline:
 
 1. `amiga/sounds` is synced to `build/data/sounds`.
 2. `tools/raw_to_wav.py --sounds-dir build/data/sounds` generates `.wav` files:
-   top-level Amiga SFX are treated as raw PCM, and `sounds/mt/*.mt` tracker
-   modules are rendered to plain `*.wav` names (for example `InGame.mt` -> `ingame.wav`) via ffmpeg/libopenmpt.
+   top-level Amiga SFX are treated as raw PCM, and tracker modules under
+   `sounds/mt/*.mt` and `sounds/med/*.med` are rendered to plain `*.wav` names
+   (for example `InGame.mt` -> `ingame.wav`) via ffmpeg/libopenmpt.
 3. `build/data/sounds` is copied beside the executable.
 
 Notes:

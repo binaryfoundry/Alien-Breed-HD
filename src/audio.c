@@ -604,14 +604,11 @@ static void normalize_module_subpath(const char *filename, char *out, size_t out
         if (*p == '\\') *p = '/';
     }
 
-    if (str_ends_with_ci(out, ".mt")) {
-        size_t n = strlen(out);
-        if (n + 2 < out_size) {
-            out[n - 3] = '.';
-            out[n - 2] = 'w';
-            out[n - 1] = 'a';
-            out[n] = 'v';
-            out[n + 1] = '\0';
+    if (str_ends_with_ci(out, ".mt") || str_ends_with_ci(out, ".med")) {
+        char *dot = strrchr(out, '.');
+        char *slash = strrchr(out, '/');
+        if (dot && (!slash || dot > slash)) {
+            snprintf(dot, out_size - (size_t)(dot - out), ".wav");
         }
     }
 }

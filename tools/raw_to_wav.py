@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Convert raw 8-bit signed PCM files in a sounds directory to .wav
-(8-bit unsigned, mono).
+Convert raw 8-bit signed PCM files and tracker modules in a sounds directory
+to .wav.
 
 Default input/output directory is repo-root data/sounds, but a custom
 directory can be passed with --sounds-dir.
@@ -68,17 +68,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def convert_mt_to_wav(mt_path: Path, out_path: Path) -> bool:
+TRACKER_MODULE_SUFFIXES = {".mt", ".med"}
+
+
+def convert_tracker_to_wav(module_path: Path, out_path: Path) -> bool:
     """
-    Convert a tracker module (.mt) to WAV via ffmpeg/libopenmpt.
+    Convert a tracker module (.mt/.med) to WAV via ffmpeg/libopenmpt.
     Returns True when output was created/updated, False when unchanged.
     """
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
-        print(f"[raw_to_wav] ffmpeg not found; skipping {mt_path.name}", file=sys.stderr)
+        print(f"[raw_to_wav] ffmpeg not found; skipping {module_path.name}", file=sys.stderr)
         return False
 
-    if out_path.exists() and out_path.stat().st_mtime >= mt_path.stat().st_mtime:
+    if out_path.exists() and out_path.stat().st_mtime >= module_path.stat().st_mtime:
         return False
 
     tmp = out_path.with_suffix(out_path.suffix + ".tmp")
@@ -89,7 +92,7 @@ def convert_mt_to_wav(mt_path: Path, out_path: Path) -> bool:
         "error",
         "-y",
         "-i",
-        str(mt_path),
+        str(module_path),
         "-ac",
         "2",
         "-ar",
@@ -102,7 +105,7 @@ def convert_mt_to_wav(mt_path: Path, out_path: Path) -> bool:
     ]
     proc = subprocess.run(cmd, check=False)
     if proc.returncode != 0:
-        print(f"[raw_to_wav] ffmpeg failed for {mt_path}", file=sys.stderr)
+        print(f"[raw_to_wav] ffmpeg failed for {module_path}", file=sys.stderr)
         try:
             if tmp.exists():
                 tmp.unlink()
@@ -139,18 +142,19 @@ def main() -> int:
 
         rel = p.relative_to(sounds_dir)
         # Keep existing behaviour for top-level SFX files, and also include
-        # tracker music dumps in nested paths (e.g. sounds/mt/*.mt).
-        return rel.parent == Path(".") or p.suffix.lower() == ".mt"
+        # tracker music dumps in nested paths (e.g. sounds/mt/*.mt,
+        # sounds/med/*.med).
+        return rel.parent == Path(".") or p.suffix.lower() in TRACKER_MODULE_SUFFIXES
 
     converted = 0
     for p in sorted(sounds_dir.rglob("*")):
         if not is_convertible(p):
             continue
 
-        if p.suffix.lower() == ".mt":
+        if p.suffix.lower() in TRACKER_MODULE_SUFFIXES:
             out = p.parent / (p.stem.lower() + ".wav")
             legacy = p.parent / (p.name.lower() + ".wav")
-            if convert_mt_to_wav(p, out):
+            if convert_tracker_to_wav(p, out):
                 converted += 1
                 print(f"  {p.name} -> {out.name}")
             if legacy != out and legacy.exists():
