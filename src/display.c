@@ -180,9 +180,12 @@ static void         display_hud_digits_ensure_loaded(void);
 #define DISPLAY_ASCII_XADVANCE        8
 #define DISPLAY_ASCII_LINE_ADVANCE    14
 #define DISPLAY_ASCII_SCALE_ONE       256
-#define DISPLAY_TEXT_WRAP_MAX_RUNS    1024
 #define DISPLAY_TEXT_MAX_LINES        32
 #define DISPLAY_TEXT_MAX_CHARS        128
+#define DISPLAY_TEXT_MIN_WRAP_COLS    8
+#define DISPLAY_TEXT_MAX_WRAPS_PER_LINE \
+    (((DISPLAY_TEXT_MAX_CHARS - 1) + DISPLAY_TEXT_MIN_WRAP_COLS - 1) / DISPLAY_TEXT_MIN_WRAP_COLS)
+#define DISPLAY_TEXT_WRAP_MAX_RUNS    (DISPLAY_TEXT_MAX_LINES * DISPLAY_TEXT_MAX_WRAPS_PER_LINE)
 static SDL_Texture *g_ascii_font_tex;
 static int          g_ascii_font_tex_w;
 static int          g_ascii_font_tex_h;
@@ -1711,7 +1714,8 @@ static int display_text_append_wrapped(DisplayTextRun *runs, int max_runs,
                                        source_line, alpha);
     }
 
-    if (max_cols < 8) max_cols = 8;
+    if (max_cols < DISPLAY_TEXT_MIN_WRAP_COLS)
+        max_cols = DISPLAY_TEXT_MIN_WRAP_COLS;
 
     int pos = start;
     int end = start + len;
@@ -1842,19 +1846,17 @@ static int display_text_layout_in_rect(SDL_Rect r, DisplayTextRun *runs,
             int xadvance = display_text_scaled_px(DISPLAY_ASCII_XADVANCE, candidate_q);
             int line_h = display_text_scaled_px(DISPLAY_ASCII_LINE_ADVANCE, candidate_q);
             int max_cols = avail_w / xadvance;
-            if (max_cols < 8) max_cols = 8;
+            if (max_cols < DISPLAY_TEXT_MIN_WRAP_COLS)
+                max_cols = DISPLAY_TEXT_MIN_WRAP_COLS;
             int candidate_longest = 1;
-            DisplayTextRun candidate_runs[DISPLAY_TEXT_WRAP_MAX_RUNS];
             int candidate_count = display_text_build_wrapped_layout(
-                candidate_runs, max_runs, max_cols,
+                runs, max_runs, max_cols,
                 collapse_blanks, &candidate_longest);
             if (candidate_count < 1) continue;
 
             int total_h = candidate_count * line_h;
             int total_w = display_text_span_width_px_q(candidate_longest, candidate_q);
             if (total_h <= avail_h && total_w <= avail_w) {
-                memcpy(runs, candidate_runs,
-                       (size_t)candidate_count * sizeof(candidate_runs[0]));
                 run_count = candidate_count;
                 scale_q = candidate_q;
                 break;
@@ -1866,7 +1868,8 @@ static int display_text_layout_in_rect(SDL_Rect r, DisplayTextRun *runs,
         int fallback_scale_q = DISPLAY_ASCII_SCALE_ONE / 4;
         int max_cols = avail_w / display_text_scaled_px(DISPLAY_ASCII_XADVANCE,
                                                         fallback_scale_q);
-        if (max_cols < 8) max_cols = 8;
+        if (max_cols < DISPLAY_TEXT_MIN_WRAP_COLS)
+            max_cols = DISPLAY_TEXT_MIN_WRAP_COLS;
         int fallback_longest = 1;
         run_count = display_text_build_wrapped_layout(
             runs, max_runs, max_cols, 1, &fallback_longest);
@@ -1892,6 +1895,10 @@ static int display_text_layout_in_rect(SDL_Rect r, DisplayTextRun *runs,
 
 static void display_text_screen_draw_in_rect(Uint8 alpha, SDL_Rect r)
 {
+    if (!display_text_has_lines()) return;
+    display_ascii_font_ensure_loaded();
+    if (!g_ascii_font_tex) return;
+
     DisplayTextRun runs[DISPLAY_TEXT_WRAP_MAX_RUNS];
     int run_count = 0;
     int scale_q = DISPLAY_ASCII_SCALE_ONE;

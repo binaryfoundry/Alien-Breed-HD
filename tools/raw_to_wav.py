@@ -13,6 +13,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import wave
 
 # Amiga AB3DI.s sets AUDxPER = 443 for all SFX channels.
 # Paula PAL audio clock is 3546895 Hz (half the 7.09 MHz master clock).
@@ -69,6 +70,21 @@ def parse_args() -> argparse.Namespace:
 
 
 TRACKER_MODULE_SUFFIXES = {".mt", ".med"}
+TRACKER_WAV_CHANNELS = 1
+TRACKER_WAV_RATE = 48000
+TRACKER_WAV_SAMPLE_WIDTH = 2
+
+
+def tracker_wav_matches_target(path: Path) -> bool:
+    try:
+        with wave.open(str(path), "rb") as w:
+            return (
+                w.getnchannels() == TRACKER_WAV_CHANNELS
+                and w.getframerate() == TRACKER_WAV_RATE
+                and w.getsampwidth() == TRACKER_WAV_SAMPLE_WIDTH
+            )
+    except (OSError, EOFError, wave.Error):
+        return False
 
 
 def convert_tracker_to_wav(module_path: Path, out_path: Path) -> bool:
@@ -81,7 +97,9 @@ def convert_tracker_to_wav(module_path: Path, out_path: Path) -> bool:
         print(f"[raw_to_wav] ffmpeg not found; skipping {module_path.name}", file=sys.stderr)
         return False
 
-    if out_path.exists() and out_path.stat().st_mtime >= module_path.stat().st_mtime:
+    if (out_path.exists()
+            and out_path.stat().st_mtime >= module_path.stat().st_mtime
+            and tracker_wav_matches_target(out_path)):
         return False
 
     tmp = out_path.with_suffix(out_path.suffix + ".tmp")
@@ -94,9 +112,9 @@ def convert_tracker_to_wav(module_path: Path, out_path: Path) -> bool:
         "-i",
         str(module_path),
         "-ac",
-        "2",
+        str(TRACKER_WAV_CHANNELS),
         "-ar",
-        "44100",
+        str(TRACKER_WAV_RATE),
         "-c:a",
         "pcm_s16le",
         "-f",

@@ -286,10 +286,20 @@ static int load_wav_converted(const char *subpath, char *path_out, size_t path_s
     }
 
     SDL_AudioCVT cvt;
-    if (SDL_BuildAudioCVT(&cvt, want.format, want.channels, want.freq,
-                          g_spec.format, g_spec.channels, g_spec.freq) < 0) {
+    int needs_conversion = SDL_BuildAudioCVT(&cvt, want.format, want.channels, want.freq,
+                                             g_spec.format, g_spec.channels, g_spec.freq);
+    if (needs_conversion < 0) {
         SDL_FreeWAV(buf);
         return 0;
+    }
+
+    if (!needs_conversion) {
+        *buf_out = buf;
+        *len_out = len;
+        if (path_out && path_size > 0) {
+            snprintf(path_out, path_size, "%s", path);
+        }
+        return 1;
     }
 
     cvt.len = (int)len;
@@ -433,11 +443,21 @@ static int load_one_sample(int id)
 
     /* Convert to device format so we can mix in callback */
     SDL_AudioCVT cvt;
-    if (SDL_BuildAudioCVT(&cvt, want.format, want.channels, want.freq,
-                           g_spec.format, g_spec.channels, g_spec.freq) < 0) {
+    int needs_conversion = SDL_BuildAudioCVT(&cvt, want.format, want.channels, want.freq,
+                                             g_spec.format, g_spec.channels, g_spec.freq);
+    if (needs_conversion < 0) {
         printf("[AUDIO] sample %d: unsupported format (%s)\n", id, path);
         if (from_amiga) SDL_free(buf); else SDL_FreeWAV(buf);
         return 0;
+    }
+
+    if (!needs_conversion) {
+        g_samples[id].data = buf;
+        g_samples[id].length = len;
+        g_samples[id].loaded = 1;
+        printf("[AUDIO] loaded %d (%s): %s%s (%u bytes)\n",
+               id, id < NUM_NAMED_SFX ? sfx_names[id] : "?", path, from_amiga ? " [Amiga raw]" : "", (unsigned)g_samples[id].length);
+        return 1;
     }
 
     cvt.len = (int)len;
