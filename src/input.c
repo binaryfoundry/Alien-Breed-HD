@@ -528,7 +528,12 @@ void input_update(uint8_t *key_map, uint8_t *last_pressed)
             return v;
         });
         if (lost) {
+            SDL_bool had_capture = g_input_capture_active || SDL_GetRelativeMouseMode();
             input_apply_relative_mouse(SDL_FALSE, key_map);
+            if (had_capture) {
+                g_keyboard_pressed[AMIGA_KEY_ESC] = 1;
+                if (last_pressed) *last_pressed = AMIGA_KEY_ESC;
+            }
         }
     }
 #endif
