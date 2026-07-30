@@ -521,7 +521,7 @@ static void game_loop_draw_ingame_menu(GameState *state, const GameLoopCtx *ctx)
     char line[80];
 
     display_clear_text_screen();
-    display_draw_line_of_text("ALIEN BREED 3D I", 0);
+    display_draw_line_of_text("ALIEN BREED 3D", 0);
     display_draw_line_of_text(" ", 1);
 
     if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_AUTOSAVES) {
