@@ -71,6 +71,7 @@ static void em_frame(void)
         return;
     }
     case EM_TEXT_FADE_IN:
+        display_emscripten_frame_resize_poll();
         play_the_game_present_level_text(st,
             play_the_game_level_text_alpha_for_step(g_em_text_step));
         g_em_text_step++;
@@ -95,6 +96,7 @@ static void em_frame(void)
         return;
     case EM_TEXT_WAIT:
     {
+        display_emscripten_frame_resize_poll();
         play_the_game_present_level_text(st, 255);
         int input = play_the_game_poll_level_text_input(st);
         if (input < 0) {
@@ -108,6 +110,7 @@ static void em_frame(void)
         return;
     }
     case EM_TEXT_FADE_OUT:
+        display_emscripten_frame_resize_poll();
         play_the_game_present_level_text(st,
             play_the_game_level_text_alpha_for_step(g_em_text_step));
         g_em_text_step--;
@@ -117,6 +120,7 @@ static void em_frame(void)
         }
         return;
     case EM_TEXT_CLEAR:
+        display_emscripten_frame_resize_poll();
         display_present_text_screen_alpha(0);
         game_loop_ctx_init(&g_em_gl_ctx, st);
         g_em_gl_ctx.hidden_present_frames = 2;

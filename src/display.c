@@ -2800,13 +2800,21 @@ void display_emscripten_frame_resize_poll(void)
 {
 #if defined(__EMSCRIPTEN__)
     if (!g_sdl_ren) return;
+    SDL_PumpEvents();
     int pending = EM_ASM_INT({
         var v = Module['ab3dFullscreenResizePending'] | 0;
         Module['ab3dFullscreenResizePending'] = 0;
         return v;
     });
-    if (pending) {
-        SDL_PumpEvents();
+    int out_w = 0;
+    int out_h = 0;
+    int changed = 0;
+    if (SDL_GetRendererOutputSize(g_sdl_ren, &out_w, &out_h) == 0) {
+        if (out_w < 1) out_w = 1;
+        if (out_h < 1) out_h = 1;
+        changed = (out_w != g_present_width || out_h != g_present_height);
+    }
+    if (pending || changed) {
         display_handle_resize();
     }
 #endif
