@@ -192,6 +192,25 @@ static uint8_t      g_text_line_used[DISPLAY_TEXT_MAX_LINES];
 static uint8_t      g_text_line_alpha[DISPLAY_TEXT_MAX_LINES];
 static void         display_ascii_font_free(void);
 static void         display_text_screen_draw(Uint8 alpha);
+static void         display_text_screen_draw_in_rect(Uint8 alpha, SDL_Rect r);
+
+/* Amiga ControlLoop.s LoadTitleScrn loads disk/includes/titlescrnraw into
+ * seven 10240-byte bitplanes, and TitleCop.s supplies TITLEPAL. */
+#define DISPLAY_TITLE_RAW_PATH      "data/includes/titlescrnraw"
+#define DISPLAY_TITLE_PAL_PATH      "data/pal/TitleScrnPal"
+#define DISPLAY_TITLE_W             320
+#define DISPLAY_TITLE_H             256
+#define DISPLAY_TITLE_PLANES        7
+#define DISPLAY_TITLE_ROW_BYTES     (DISPLAY_TITLE_W / 8)
+#define DISPLAY_TITLE_PLANE_BYTES   (DISPLAY_TITLE_ROW_BYTES * DISPLAY_TITLE_H)
+#define DISPLAY_TITLE_RAW_BYTES     (DISPLAY_TITLE_PLANES * DISPLAY_TITLE_PLANE_BYTES)
+#define DISPLAY_TITLE_PAL_COLORS    (1 << DISPLAY_TITLE_PLANES)
+#define DISPLAY_TITLE_PAL_ENTRY_BYTES 4
+#define DISPLAY_TITLE_PAL_BYTES     (DISPLAY_TITLE_PAL_COLORS * DISPLAY_TITLE_PAL_ENTRY_BYTES)
+#define DISPLAY_TITLE_FULL_FADE_SCALE 252
+static SDL_Texture *g_title_screen_tex;
+static int          g_title_screen_load_attempted;
+static void         display_title_screen_free(void);
 
 static int g_gl_unpack_ok; /* OpenGL R16UI + shader path active */
 static int g_present_width = 0;
@@ -1335,6 +1354,209 @@ static SDL_Texture *display_load_png_texture_argb(const char *rel_path, int *out
     return t;
 }
 
+static FILE *display_open_asset_file(const char *rel_path, char *path,
+                                     size_t path_size, const char *label)
+{
+    FILE *f = NULL;
+    char *base;
+
+    if (!rel_path || !*rel_path || !path || path_size < 1) return NULL;
+    path[0] = '\0';
+
+    base = SDL_GetBasePath();
+    if (base) {
+        int plen = snprintf(path, path_size, "%s%s", base, rel_path);
+        if (plen > 0 && plen < (int)path_size)
+            f = fopen(path, "rb");
+        SDL_free(base);
+    }
+    if (!f) {
+        int plen = snprintf(path, path_size, "%s", rel_path);
+        if (plen > 0 && plen < (int)path_size)
+            f = fopen(path, "rb");
+    }
+
+    if (!f) {
+        printf("[DISPLAY] %s: could not open %s\n",
+               label ? label : "asset", rel_path);
+    }
+    return f;
+}
+
+static uint8_t *display_load_asset_exact(const char *rel_path,
+                                         size_t expected_size,
+                                         const char *label)
+{
+    char path[1024];
+    FILE *f;
+    long len;
+    uint8_t *data;
+
+    f = display_open_asset_file(rel_path, path, sizeof(path), label);
+    if (!f) return NULL;
+
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    len = ftell(f);
+    if (len < 0 || (size_t)len != expected_size) {
+        printf("[DISPLAY] %s: expected %u bytes, got %ld (%s)\n",
+               label ? label : "asset",
+               (unsigned)expected_size,
+               len,
+               path);
+        fclose(f);
+        return NULL;
+    }
+    rewind(f);
+
+    data = (uint8_t *)malloc(expected_size);
+    if (!data) {
+        fclose(f);
+        return NULL;
+    }
+    if (fread(data, 1, expected_size, f) != expected_size) {
+        printf("[DISPLAY] %s: read failed (%s)\n",
+               label ? label : "asset", path);
+        free(data);
+        fclose(f);
+        return NULL;
+    }
+
+    fclose(f);
+    return data;
+}
+
+static SDL_Rect display_fit_rect(int win_w, int win_h, int src_w, int src_h)
+{
+    SDL_Rect dst;
+    double sx;
+    double sy;
+    double sc;
+
+    if (win_w < 1) win_w = 1;
+    if (win_h < 1) win_h = 1;
+    if (src_w < 1) src_w = 1;
+    if (src_h < 1) src_h = 1;
+
+    sx = (double)win_w / (double)src_w;
+    sy = (double)win_h / (double)src_h;
+    sc = (sx < sy) ? sx : sy;
+
+    dst.w = (int)((double)src_w * sc + 0.5);
+    dst.h = (int)((double)src_h * sc + 0.5);
+    if (dst.w < 1) dst.w = 1;
+    if (dst.h < 1) dst.h = 1;
+    if (dst.w > win_w) dst.w = win_w;
+    if (dst.h > win_h) dst.h = win_h;
+    dst.x = (win_w - dst.w) / 2;
+    dst.y = (win_h - dst.h) / 2;
+    return dst;
+}
+
+static void display_title_screen_free(void)
+{
+    if (g_title_screen_tex) {
+        SDL_DestroyTexture(g_title_screen_tex);
+        g_title_screen_tex = NULL;
+    }
+    g_title_screen_load_attempted = 0;
+}
+
+static uint8_t display_title_palette_component_to_rgb(int component)
+{
+    if (component < 0) component = 0;
+    if (component > 255) component = 255;
+
+    /* ControlLoop.s PUTIN32 multiplies each 8-bit component by FADEVAL and
+     * shifts by 8 before splitting high/low nibbles into AGA color banks.
+     * FadeUpTitle's full title display ends at FADEVAL=252. */
+    component = (component * DISPLAY_TITLE_FULL_FADE_SCALE) >> 8;
+    if (component < 0) component = 0;
+    if (component > 255) component = 255;
+    return (uint8_t)component;
+}
+
+static void display_title_screen_ensure_loaded(void)
+{
+    uint8_t *raw;
+    uint8_t *pal;
+    uint32_t *argb;
+
+    if (g_title_screen_load_attempted || !g_sdl_ren) return;
+    g_title_screen_load_attempted = 1;
+
+    raw = display_load_asset_exact(DISPLAY_TITLE_RAW_PATH,
+                                   DISPLAY_TITLE_RAW_BYTES,
+                                   "title screen raw");
+    pal = display_load_asset_exact(DISPLAY_TITLE_PAL_PATH,
+                                   DISPLAY_TITLE_PAL_BYTES,
+                                   "title screen palette");
+    if (!raw || !pal) {
+        free(raw);
+        free(pal);
+        return;
+    }
+
+    argb = (uint32_t *)malloc((size_t)DISPLAY_TITLE_W *
+                              (size_t)DISPLAY_TITLE_H *
+                              sizeof(uint32_t));
+    if (!argb) {
+        free(raw);
+        free(pal);
+        return;
+    }
+
+    for (int y = 0; y < DISPLAY_TITLE_H; y++) {
+        for (int x = 0; x < DISPLAY_TITLE_W; x++) {
+            int byte_off = y * DISPLAY_TITLE_ROW_BYTES + (x >> 3);
+            int bit = 7 - (x & 7);
+            int index = 0;
+
+            for (int plane = 0; plane < DISPLAY_TITLE_PLANES; plane++) {
+                const uint8_t *plane_base =
+                    raw + (size_t)plane * DISPLAY_TITLE_PLANE_BYTES;
+                index |= ((plane_base[byte_off] >> bit) & 1) << plane;
+            }
+
+            {
+                size_t pal_off = (size_t)index * DISPLAY_TITLE_PAL_ENTRY_BYTES;
+                uint32_t r = display_title_palette_component_to_rgb(
+                    ((int)pal[pal_off] << 8) | (int)pal[pal_off + 1]);
+                uint32_t g = display_title_palette_component_to_rgb(
+                    (int)pal[pal_off + 2]);
+                uint32_t b = display_title_palette_component_to_rgb(
+                    (int)pal[pal_off + 3]);
+                argb[(size_t)y * DISPLAY_TITLE_W + (size_t)x] =
+                    0xFF000000u | (r << 16) | (g << 8) | b;
+            }
+        }
+    }
+
+    g_title_screen_tex = SDL_CreateTexture(g_sdl_ren, SDL_PIXELFORMAT_ARGB8888,
+                                           SDL_TEXTUREACCESS_STATIC,
+                                           DISPLAY_TITLE_W, DISPLAY_TITLE_H);
+    if (!g_title_screen_tex ||
+        SDL_UpdateTexture(g_title_screen_tex, NULL, argb,
+                          DISPLAY_TITLE_W * (int)sizeof(uint32_t)) != 0) {
+        if (g_title_screen_tex) SDL_DestroyTexture(g_title_screen_tex);
+        g_title_screen_tex = NULL;
+        printf("[DISPLAY] title screen: SDL texture upload failed\n");
+    } else {
+        SDL_SetTextureBlendMode(g_title_screen_tex, SDL_BLENDMODE_BLEND);
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+        SDL_SetTextureScaleMode(g_title_screen_tex, SDL_ScaleModeNearest);
+#endif
+        printf("[DISPLAY] Title screen loaded from %s / %s\n",
+               DISPLAY_TITLE_RAW_PATH, DISPLAY_TITLE_PAL_PATH);
+    }
+
+    free(argb);
+    free(raw);
+    free(pal);
+}
+
 static void display_ascii_font_free(void)
 {
     if (g_ascii_font_tex) {
@@ -1565,11 +1787,10 @@ static int display_text_build_wrapped_layout(DisplayTextRun *runs, int max_runs,
     return count;
 }
 
-static void display_text_screen_draw(Uint8 alpha)
+static void display_text_screen_draw_in_rect(Uint8 alpha, SDL_Rect r)
 {
     if (!display_text_has_lines()) return;
 
-    SDL_Rect r = g_present_dst_rect;
     if (r.w < 1 || r.h < 1) {
         r.x = 0;
         r.y = 0;
@@ -1666,6 +1887,11 @@ static void display_text_screen_draw(Uint8 alpha)
         display_bitmap_text_span_abs(runs[i].text, runs[i].start, runs[i].len,
                                      x, y, scale_q, run_alpha);
     }
+}
+
+static void display_text_screen_draw(Uint8 alpha)
+{
+    display_text_screen_draw_in_rect(alpha, g_present_dst_rect);
 }
 
 static void display_automap_line_stroked_gl(int ax0, int ay0, int ax1, int ay1,
@@ -2465,6 +2691,7 @@ void display_shutdown(void)
     display_hud_digits_free();
     display_key_hud_free_textures();
     display_ascii_font_free();
+    display_title_screen_free();
     display_gl_lines_release_scratch();
     g_key_hud_tex_tag = 0;
     renderer_shutdown();
@@ -2484,12 +2711,12 @@ void display_release_text_screen(void)      { display_clear_text_screen(); displ
 void display_alloc_copper_screen(void)      { }
 void display_release_copper_screen(void)    { }
 void display_alloc_title_memory(void)       { }
-void display_release_title_memory(void)     { }
+void display_release_title_memory(void)     { display_title_screen_free(); }
 void display_alloc_panel_memory(void)       { }
 void display_release_panel_memory(void)     { }
 
-void display_setup_title_screen(void)       { }
-void display_load_title_screen(void)        { }
+void display_setup_title_screen(void)       { display_title_screen_ensure_loaded(); }
+void display_load_title_screen(void)        { display_title_screen_ensure_loaded(); }
 void display_clear_opt_screen(void)         { display_clear_text_screen(); }
 void display_draw_opt_screen(int screen_num) { (void)screen_num; }
 void display_fade_up_title(int amount)      { (void)amount; }
@@ -3590,6 +3817,64 @@ void display_present_text_screen_alpha(int alpha)
         SDL_SetRenderDrawColor(g_sdl_ren, 0, 0, 0, 255);
         SDL_RenderClear(g_sdl_ren);
         display_text_screen_draw((Uint8)alpha);
+    }
+
+    SDL_RenderPresent(g_sdl_ren);
+}
+
+void display_present_title_screen_alpha(int text_alpha, int dim_alpha)
+{
+    if (!g_sdl_ren) return;
+    if (text_alpha < 0) text_alpha = 0;
+    if (text_alpha > 255) text_alpha = 255;
+    if (dim_alpha < 0) dim_alpha = 0;
+    if (dim_alpha > 255) dim_alpha = 255;
+
+    display_title_screen_ensure_loaded();
+    if (!g_title_screen_tex) {
+        display_present_text_screen_alpha(text_alpha);
+        return;
+    }
+
+    int out_w = 0;
+    int out_h = 0;
+    if (SDL_GetRendererOutputSize(g_sdl_ren, &out_w, &out_h) != 0) {
+        out_w = g_present_width;
+        out_h = g_present_height;
+    }
+    if (out_w < 1) out_w = 1;
+    if (out_h < 1) out_h = 1;
+    if (out_w != g_present_width || out_h != g_present_height) {
+        display_update_letterbox(out_w, out_h);
+        g_present_width = out_w;
+        g_present_height = out_h;
+    }
+
+    SDL_Rect title_dst = display_fit_rect(out_w, out_h,
+                                          DISPLAY_TITLE_W,
+                                          DISPLAY_TITLE_H);
+
+    if (g_gl_unpack_ok && g_gl_hud_ok) {
+        display_gl_output_size(&g_gl_overlay_win_w, &g_gl_overlay_win_h);
+        g_gl_viewport(0, 0, g_gl_overlay_win_w, g_gl_overlay_win_h);
+        g_gl_clear_color(0.0f, 0.0f, 0.0f, 1.0f);
+        g_gl_clear(GL_COLOR_BUFFER_BIT);
+        title_dst = display_fit_rect(g_gl_overlay_win_w, g_gl_overlay_win_h,
+                                     DISPLAY_TITLE_W, DISPLAY_TITLE_H);
+        display_gl_overlay_begin();
+        display_overlay_copy(g_title_screen_tex, NULL, &title_dst);
+        if (dim_alpha > 0)
+            display_overlay_fill_rect_abs(&title_dst, 0, 0, 0, (Uint8)dim_alpha);
+        display_text_screen_draw_in_rect((Uint8)text_alpha, title_dst);
+        display_gl_overlay_end();
+    } else {
+        SDL_SetRenderDrawBlendMode(g_sdl_ren, SDL_BLENDMODE_NONE);
+        SDL_SetRenderDrawColor(g_sdl_ren, 0, 0, 0, 255);
+        SDL_RenderClear(g_sdl_ren);
+        display_overlay_copy(g_title_screen_tex, NULL, &title_dst);
+        if (dim_alpha > 0)
+            display_overlay_fill_rect_abs(&title_dst, 0, 0, 0, (Uint8)dim_alpha);
+        display_text_screen_draw_in_rect((Uint8)text_alpha, title_dst);
     }
 
     SDL_RenderPresent(g_sdl_ren);

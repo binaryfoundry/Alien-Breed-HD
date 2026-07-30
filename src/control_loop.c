@@ -47,6 +47,7 @@ static void control_game_over_fade_tick(float progress_0_to_1, void *userdata);
 static void control_level_complete_fade_tick(float progress_0_to_1, void *userdata);
 static bool s_autosave_next_level_start = false;
 static bool s_show_transition_level_text = false;
+static bool s_front_menu_requested = true;
 
 /* -----------------------------------------------------------------------
  * Password system
@@ -749,10 +750,13 @@ static void control_setup_new_game_state(GameState *state)
         }
     }
 
-    /* ---- Bypass menu: go straight to first level (testing) ---- */
+    /* New Game starts from the configured level after the title menu.
+     * INI start_level=0 means level 1; 1..MAX_LEVELS are 1-based overrides. */
     state->current_level = 0;
     state->max_level = 16;
     state->finished_level = 0;
+    state->f9_pending_apply_save = false;
+    state->debug_f9_need_level_reload = false;
     s_autosave_next_level_start = false;
     state->nasty = true;
     state->plr1.angpos = 0;
@@ -764,79 +768,47 @@ static void control_setup_new_game_state(GameState *state)
         printf("[CONTROL] start_level=%d: starting configured level\n",
                (int)state->current_level + 1);
     } else {
-        printf("[CONTROL] start_level=0: latest autosave startup mode\n");
+        printf("[CONTROL] start_level=0: new game starts at level 1\n");
     }
 }
 
-static int control_find_latest_autosave(PlayerAutosaveInfo *out_info)
+static void control_setup_new_game_from_menu(GameState *state)
 {
-    PlayerAutosaveInfo info;
-
-    for (int slot = 0; slot < PLAYER_AUTOSAVE_SLOT_COUNT; slot++) {
-        if (player_read_autosave_info(slot, &info)) {
-            if (out_info) *out_info = info;
-            return slot;
-        }
-    }
-    return -1;
+    control_setup_new_game_state(state);
+    s_show_transition_level_text = true;
 }
 
-static bool control_load_latest_autosave(GameState *state, const char *log_prefix)
+int play_game_front_menu_requested(void)
 {
-    PlayerAutosaveInfo info;
-    int slot;
-    PlayerSaveLoadResult result;
+    return s_front_menu_requested ? 1 : 0;
+}
 
-    if (!state) return false;
-    if (!log_prefix) log_prefix = "Autosave";
+int play_game_apply_front_menu_result(GameState *state, int menu_result)
+{
+    if (!state) return 0;
 
-    slot = control_find_latest_autosave(&info);
-    if (slot < 0) {
-        printf("[CONTROL] %s: no autosave found\n", log_prefix);
-        return false;
-    }
+    switch (menu_result) {
+    case GAME_LOOP_FRONT_MENU_NEW_GAME:
+        s_front_menu_requested = false;
+        control_setup_new_game_from_menu(state);
+        return 1;
 
-    result = player_load_autosave_from_file(state, slot);
-    switch (result) {
-    case PLAYER_SAVE_LOAD_NEED_LEVEL_RELOAD:
-        state->f9_pending_apply_save = true;
+    case GAME_LOOP_FRONT_MENU_LOAD_AUTOSAVE:
+        s_front_menu_requested = false;
+        s_show_transition_level_text = false;
+        s_autosave_next_level_start = false;
+        display_clear_screen_tint();
+        state->running = true;
+        state->finished_level = 0;
+        state->restart_game_requested = false;
         state->debug_f9_need_level_reload = false;
-        s_show_transition_level_text = false;
-        s_autosave_next_level_start = false;
-        printf("[CONTROL] %s: autosave %d level %d  %s\n",
-               log_prefix, slot + 1, (int)info.level + 1, info.timestamp);
-        return true;
+        return 1;
 
-    case PLAYER_SAVE_LOAD_APPLIED:
-        s_show_transition_level_text = false;
-        s_autosave_next_level_start = false;
-        printf("[CONTROL] %s: autosave %d level %d  %s\n",
-               log_prefix, slot + 1, (int)info.level + 1, info.timestamp);
-        return true;
-
-    case PLAYER_SAVE_LOAD_FAILED:
+    case GAME_LOOP_FRONT_MENU_EXIT:
     default:
-        printf("[CONTROL] %s: latest autosave could not be loaded\n",
-               log_prefix);
-        return false;
+        s_front_menu_requested = false;
+        return 0;
     }
-}
-
-static void control_try_start_from_latest_autosave(GameState *state)
-{
-    if (!state) return;
-    if (state->cfg_start_level >= 0) {
-        printf("[CONTROL] Autosave startup skipped because start_level=%d\n",
-               (int)state->cfg_start_level + 1);
-        return;
-    }
-
-    (void)control_load_latest_autosave(state, "Starting from latest autosave");
-}
-
-static bool control_try_recover_from_latest_autosave(GameState *state)
-{
-    return control_load_latest_autosave(state, "Recovering from death");
 }
 
 void play_game_load_shared_assets(GameState *state)
@@ -858,8 +830,11 @@ void play_game_load_shared_assets(GameState *state)
     io_load_vec_objects();
     io_load_sfx();
 
+    display_alloc_title_memory();
+    display_setup_title_screen();
+    display_load_title_screen();
     control_setup_new_game_state(state);
-    control_try_start_from_latest_autosave(state);
+    s_front_menu_requested = true;
 
     io_load_panel();
 }
@@ -868,7 +843,7 @@ void play_game_load_shared_assets(GameState *state)
 int play_game_outer_should_continue(GameState *state)
 {
     if (state->restart_game_requested) {
-        control_setup_new_game_state(state);
+        control_setup_new_game_from_menu(state);
         printf("[CONTROL] Restarting new game from in-game menu\n");
         return 1;
     }
@@ -880,12 +855,10 @@ int play_game_outer_should_continue(GameState *state)
                                                       state);
             display_clear_screen_tint();
             printf("[MUSIC] outcome: game over\n");
-            if (control_try_recover_from_latest_autosave(state)) {
-                printf("[CONTROL] Loading latest autosave after death\n");
-            } else {
-                control_setup_new_game_state(state);
-                printf("[CONTROL] No autosave available; restarting new game after death\n");
-            }
+            s_front_menu_requested = true;
+            s_show_transition_level_text = false;
+            s_autosave_next_level_start = false;
+            printf("[CONTROL] Returning to title menu after death\n");
             return 1;
         }
         return 0;
@@ -1015,18 +988,16 @@ int play_game_outer_emscripten_finish(GameState *state)
 {
     switch (s_em_outer_br) {
     case EM_OUTER_BR_NEW_GAME:
-        control_setup_new_game_state(state);
+        control_setup_new_game_from_menu(state);
         printf("[CONTROL] Restarting new game from in-game menu\n");
         return 1;
     case EM_OUTER_BR_GAMEOVER:
         display_clear_screen_tint();
         printf("[MUSIC] outcome: game over\n");
-        if (control_try_recover_from_latest_autosave(state)) {
-            printf("[CONTROL] Loading latest autosave after death\n");
-        } else {
-            control_setup_new_game_state(state);
-            printf("[CONTROL] No autosave available; restarting new game after death\n");
-        }
+        s_front_menu_requested = true;
+        s_show_transition_level_text = false;
+        s_autosave_next_level_start = false;
+        printf("[CONTROL] Returning to title menu after death\n");
         return 1;
     case EM_OUTER_BR_ENDGAME:
         display_clear_screen_tint();
@@ -1056,6 +1027,21 @@ int play_game_outer_emscripten_finish(GameState *state)
 }
 #endif
 
+#if !defined(__EMSCRIPTEN__)
+static int control_run_front_menu(GameState *state)
+{
+    GameLoopCtx ctx;
+
+    game_loop_front_menu_init(&ctx, state);
+    for (;;) {
+        int result = game_loop_front_menu_tick(state, &ctx);
+        if (result != GAME_LOOP_FRONT_MENU_NONE)
+            return result;
+        SDL_Delay(16);
+    }
+}
+#endif
+
 /*
  * play_game - The outermost game loop
  *
@@ -1067,6 +1053,12 @@ void play_game(GameState *state)
     play_game_load_shared_assets(state);
 
     for (;;) {
+        if (s_front_menu_requested) {
+            int menu_result = control_run_front_menu(state);
+            if (!play_game_apply_front_menu_result(state, menu_result))
+                break;
+        }
+
         play_the_game(state);
 
         if (!play_game_outer_should_continue(state)) break;

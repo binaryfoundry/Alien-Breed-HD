@@ -18,6 +18,7 @@ void input_shutdown(void);
 
 /* Per-frame polling */
 void input_update(uint8_t *key_map, uint8_t *last_pressed);
+bool input_quit_requested(void);
 
 /* Mouse */
 typedef struct {

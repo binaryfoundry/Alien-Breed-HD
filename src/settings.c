@@ -388,7 +388,8 @@ static void apply_line(GameState *state, char *line)
 
     if (strcmp(key, "start_level") == 0) {
         int n = atoi(val);
-        /* INI: 0 = latest-autosave startup mode; 1..MAX_LEVELS are fixed 1-based levels. */
+        /* INI: title menu always appears. New Game uses 0 = level 1;
+         * 1..MAX_LEVELS are fixed 1-based levels. */
         if (n >= 1 && n <= MAX_LEVELS) {
             state->cfg_start_level = (int16_t)(n - 1);
         } else if (n == 0) {

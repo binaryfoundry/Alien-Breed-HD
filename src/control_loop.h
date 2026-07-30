@@ -21,6 +21,8 @@
 
 /* Shared asset load used by play_game and the Emscripten browser driver. */
 void play_game_load_shared_assets(GameState *state);
+int  play_game_front_menu_requested(void);
+int  play_game_apply_front_menu_result(GameState *state, int menu_result);
 
 /* Original AB3DI.s DrawLevelText / PlayTheGame text-screen intro helpers. */
 int  play_the_game_should_show_level_text(const GameState *state);

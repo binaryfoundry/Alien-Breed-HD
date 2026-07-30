@@ -674,6 +674,11 @@ void input_update(uint8_t *key_map, uint8_t *last_pressed)
     input_merge_key_sources(key_map);
 }
 
+bool input_quit_requested(void)
+{
+    return g_quit_requested;
+}
+
 void input_read_mouse(MouseState *out)
 {
     if (out) {

@@ -6,9 +6,11 @@
 # loads ab3d.ini first, then ab3d.ini.template in the same folder only if ab3d.ini is missing.
 
 # Startup level selection:
-# 0 = resume the latest autosave if present; otherwise start level 1.
-# 1..16 = always start that level and ignore autosaves on startup.
-# Flavor text is only shown after level transitions, not on startup.
+# The game starts at the title menu. Continue loads the latest autosave.
+# New Game uses this setting:
+# 0 = start level 1.
+# 1..16 = start that fixed 1-based level.
+# Flavor text is shown for New Game and level transitions, not Continue/autosave loads.
 start_level=0
 
 # 1 = health stays at maximum (no damage from enemies/environment).

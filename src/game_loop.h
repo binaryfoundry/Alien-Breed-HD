@@ -32,6 +32,13 @@
 
 #include <SDL.h>
 
+typedef enum GameLoopFrontMenuResult {
+    GAME_LOOP_FRONT_MENU_NONE = 0,
+    GAME_LOOP_FRONT_MENU_NEW_GAME,
+    GAME_LOOP_FRONT_MENU_LOAD_AUTOSAVE,
+    GAME_LOOP_FRONT_MENU_EXIT
+} GameLoopFrontMenuResult;
+
 /* Persistent state for one in-level session (VBlank accums, FPS meter, etc.) */
 typedef struct GameLoopCtx {
     int frame_count;
@@ -42,6 +49,8 @@ typedef struct GameLoopCtx {
     Uint64 fps_sample_start_counter;
     int fps_frames_in_sample;
     int ingame_menu_open;
+    int ingame_menu_frontend;
+    int ingame_menu_result;
     int ingame_menu_screen;
     int ingame_menu_selected;
     int ingame_menu_autosave_count;
@@ -54,6 +63,8 @@ typedef struct GameLoopCtx {
 
 void game_loop_ctx_init(GameLoopCtx *ctx, GameState *state);
 void game_loop_tick(GameState *state, GameLoopCtx *ctx);
+void game_loop_front_menu_init(GameLoopCtx *ctx, GameState *state);
+int game_loop_front_menu_tick(GameState *state, GameLoopCtx *ctx);
 
 /* Run the main game loop until level ends, player dies, or quit */
 void game_loop(GameState *state);

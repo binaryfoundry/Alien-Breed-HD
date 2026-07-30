@@ -20,6 +20,7 @@ extern void tear_down_game(GameState *state);
 static GameState *g_em_st;
 
 typedef enum {
+    EM_FRONT_MENU,
     EM_TEXT_FADE_IN,
     EM_PREP,
     EM_TEXT_WAIT,
@@ -33,6 +34,7 @@ typedef enum {
 static EmPhase g_em_phase = EM_PREP;
 static bool g_em_copper_ready;
 static GameLoopCtx g_em_gl_ctx;
+static GameLoopCtx g_em_front_menu_ctx;
 static bool g_em_show_level_text;
 static int g_em_text_step;
 /* 0 = run begin, 1 = fading music, 2 = run finish */
@@ -50,6 +52,24 @@ static void em_frame(void)
     GameState *st = g_em_st;
 
     switch (g_em_phase) {
+    case EM_FRONT_MENU:
+    {
+        int result = game_loop_front_menu_tick(st, &g_em_front_menu_ctx);
+        if (result == GAME_LOOP_FRONT_MENU_NONE)
+            return;
+        if (!play_game_apply_front_menu_result(st, result)) {
+            display_release_panel_memory();
+            printf("[CONTROL] PlayGame finished\n");
+            tear_down_game(st);
+            printf("\n=== Exit (code 0) ===\n");
+            ab3d_log_shutdown();
+            emscripten_cancel_main_loop();
+            return;
+        }
+        g_em_copper_ready = false;
+        em_begin_level_phase(st);
+        return;
+    }
     case EM_TEXT_FADE_IN:
         play_the_game_present_level_text(st,
             play_the_game_level_text_alpha_for_step(g_em_text_step));
@@ -131,7 +151,12 @@ static void em_frame(void)
             g_em_outer_sub = 0;
             if (cont) {
                 g_em_copper_ready = false;
-                em_begin_level_phase(st);
+                if (play_game_front_menu_requested()) {
+                    game_loop_front_menu_init(&g_em_front_menu_ctx, st);
+                    g_em_phase = EM_FRONT_MENU;
+                } else {
+                    em_begin_level_phase(st);
+                }
             } else {
                 display_release_panel_memory();
                 printf("[CONTROL] PlayGame finished\n");
@@ -155,6 +180,7 @@ void emscripten_run_game(GameState *state)
     g_em_show_level_text = false;
     g_em_text_step = 0;
     g_em_outer_sub = 0;
-    em_begin_level_phase(state);
+    game_loop_front_menu_init(&g_em_front_menu_ctx, state);
+    g_em_phase = EM_FRONT_MENU;
     emscripten_set_main_loop(em_frame, 0, 1);
 }

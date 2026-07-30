@@ -40,6 +40,7 @@ void display_draw_opt_screen(int screen_num);
 void display_fade_up_title(int amount);
 void display_fade_down_title(int amount);
 void display_clear_title_palette(void);
+void display_present_title_screen_alpha(int text_alpha, int dim_alpha);
 
 /* Gun GL textures: decode all 32 gun frame slots and upload to GPU once.
  * Call after io_load_gun_graphics().  Safe to call multiple times (re-uploads). */
