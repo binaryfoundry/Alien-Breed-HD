@@ -11,6 +11,10 @@
     <style type="text/css">
       html, body {
         margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #050706;
       }
       .emscripten {
         width: 100%;
@@ -24,12 +28,200 @@
         width: 100%;
         height: 100%;
         display: block;
+        background: #050706;
+        image-rendering: pixelated;
       }
-      .loading {
+      .ab3d-preloader {
+        position: fixed;
+        inset: 0;
+        z-index: 12000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        box-sizing: border-box;
+        overflow: hidden;
+        color: #d7ffd1;
+        background:
+          repeating-linear-gradient(90deg, rgba(86, 132, 95, 0.08) 0, rgba(86, 132, 95, 0.08) 1px, transparent 1px, transparent 32px),
+          repeating-linear-gradient(0deg, rgba(86, 132, 95, 0.06) 0, rgba(86, 132, 95, 0.06) 1px, transparent 1px, transparent 24px),
+          linear-gradient(180deg, #07100c 0%, #030504 68%, #010202 100%);
+        font-family: Consolas, 'Lucida Console', 'Courier New', monospace;
+        opacity: 1;
+        visibility: visible;
+        transition: opacity 0.34s ease, visibility 0.34s ease;
+      }
+      .ab3d-preloader.hidden {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
+      .ab3d-preloader::before {
+        content: "";
         position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(110deg, rgba(126, 28, 22, 0.18) 0%, transparent 34%),
+          linear-gradient(250deg, rgba(204, 158, 48, 0.12) 0%, transparent 32%);
+        pointer-events: none;
       }
-      .game[width] + .loading {
-        display: none;
+      .ab3d-preloader::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.045) 0, rgba(255, 255, 255, 0.045) 1px, transparent 1px, transparent 4px);
+        opacity: 0.24;
+        pointer-events: none;
+      }
+      .ab3d-preloader__frame {
+        position: relative;
+        width: min(680px, calc(100vw - 32px));
+        max-height: calc(100vh - 32px);
+        box-sizing: border-box;
+        overflow: auto;
+        padding: 30px 34px 28px;
+        background:
+          linear-gradient(180deg, rgba(13, 30, 22, 0.96), rgba(4, 8, 7, 0.98)),
+          #07100c;
+        border: 2px solid #5f7a5f;
+        box-shadow:
+          0 0 0 1px rgba(213, 255, 194, 0.14) inset,
+          0 20px 80px rgba(0, 0, 0, 0.68),
+          0 0 36px rgba(113, 181, 95, 0.22);
+      }
+      .ab3d-preloader__frame::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 0;
+        height: 7px;
+        background: linear-gradient(90deg, #9a2b22 0 22%, #c5a33b 22% 31%, #263d2d 31% 100%);
+      }
+      .ab3d-preloader__frame::after {
+        content: "";
+        position: absolute;
+        left: 12px;
+        right: 12px;
+        bottom: 10px;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(220, 255, 196, 0.42), transparent);
+      }
+      .ab3d-preloader__kicker {
+        margin: 0 0 8px;
+        color: #d0a84a;
+        font-size: 13px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0;
+      }
+      .ab3d-preloader__title {
+        margin: 0;
+        color: #f4ffe8;
+        font-size: 30px;
+        font-weight: 800;
+        line-height: 1.08;
+        text-transform: uppercase;
+        text-shadow: 0 0 10px rgba(167, 255, 144, 0.38);
+        letter-spacing: 0;
+      }
+      .ab3d-preloader__subtitle {
+        margin: 10px 0 26px;
+        color: #86b784;
+        font-size: 14px;
+        line-height: 1.45;
+      }
+      .ab3d-preloader__panel {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px 18px;
+        align-items: end;
+        margin-bottom: 10px;
+      }
+      .ab3d-preloader__status-label,
+      .ab3d-preloader__percent-label {
+        color: #7eae7e;
+        font-size: 12px;
+        text-transform: uppercase;
+      }
+      .ab3d-preloader__status {
+        min-height: 20px;
+        color: #eaffde;
+        font-size: 16px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+      .ab3d-preloader__percent {
+        color: #ffd15a;
+        font-size: 18px;
+        font-weight: 800;
+        text-align: right;
+      }
+      .ab3d-preloader__bar {
+        height: 18px;
+        overflow: hidden;
+        border: 1px solid #6c8e67;
+        background:
+          repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.08) 0, rgba(255, 255, 255, 0.08) 1px, transparent 1px, transparent 14px),
+          #09110d;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.8) inset;
+      }
+      .ab3d-preloader__bar-fill {
+        width: 100%;
+        height: 100%;
+        transform: scaleX(0);
+        transform-origin: left center;
+        background: linear-gradient(90deg, #7ea957, #e0c45e 70%, #b43b2c);
+        box-shadow: 0 0 18px rgba(201, 239, 119, 0.42);
+        transition: transform 0.18s ease;
+      }
+      .ab3d-preloader__readouts {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        margin-top: 22px;
+      }
+      .ab3d-preloader__readout {
+        min-width: 0;
+        padding: 9px 10px;
+        border: 1px solid rgba(126, 174, 126, 0.32);
+        background: rgba(2, 6, 5, 0.58);
+      }
+      .ab3d-preloader__readout-name {
+        display: block;
+        color: #6f9f72;
+        font-size: 11px;
+        text-transform: uppercase;
+      }
+      .ab3d-preloader__readout-value {
+        display: block;
+        margin-top: 3px;
+        color: #e5ffd7;
+        font-size: 13px;
+        font-weight: 700;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .ab3d-preloader--complete .ab3d-preloader__bar-fill {
+        background: linear-gradient(90deg, #a7e76a, #f2d45c 68%, #f2d45c);
+      }
+      @media (max-width: 520px) {
+        .ab3d-preloader__frame {
+          padding: 24px 20px 24px;
+        }
+        .ab3d-preloader__title {
+          font-size: 24px;
+        }
+        .ab3d-preloader__readouts {
+          grid-template-columns: 1fr;
+        }
+      }
+      @media (max-height: 430px) {
+        .ab3d-preloader__subtitle,
+        .ab3d-preloader__readouts {
+          display: none;
+        }
       }
       .credit-overlay {
         position: fixed;
@@ -190,9 +382,42 @@
   <body>
     <div class="emscripten">
       <canvas id="canvas" class="game" oncontextmenu="event.preventDefault()"></canvas>
-      <div class="loading">Loading...</div>
+      <div class="ab3d-preloader" id="ab3dPreloader" role="status" aria-live="polite">
+        <div class="ab3d-preloader__frame">
+          <p class="ab3d-preloader__kicker">System Boot</p>
+          <h1 class="ab3d-preloader__title">Alien Breed 3D</h1>
+          <p class="ab3d-preloader__subtitle">Restoring combat visor, audio channels, and asset pack.</p>
+          <div class="ab3d-preloader__panel">
+            <div>
+              <div class="ab3d-preloader__status-label">Loader Status</div>
+              <div class="ab3d-preloader__status" id="ab3dPreloaderStatus">Requesting data</div>
+            </div>
+            <div>
+              <div class="ab3d-preloader__percent-label">Progress</div>
+              <div class="ab3d-preloader__percent" id="ab3dPreloaderPercent">0%</div>
+            </div>
+          </div>
+          <div class="ab3d-preloader__bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Loading progress">
+            <div class="ab3d-preloader__bar-fill" id="ab3dPreloaderBar"></div>
+          </div>
+          <div class="ab3d-preloader__readouts" aria-hidden="true">
+            <div class="ab3d-preloader__readout">
+              <span class="ab3d-preloader__readout-name">Asset Pack</span>
+              <span class="ab3d-preloader__readout-value">STANDBY</span>
+            </div>
+            <div class="ab3d-preloader__readout">
+              <span class="ab3d-preloader__readout-name">WASM Core</span>
+              <span class="ab3d-preloader__readout-value">ARMING</span>
+            </div>
+            <div class="ab3d-preloader__readout">
+              <span class="ab3d-preloader__readout-name">Mission</span>
+              <span class="ab3d-preloader__readout-value">INFILTRATION</span>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
-    <div class="remote-multiplayer-tip" id="remoteMultiplayerTip" aria-label="Game readme">
+    <div class="remote-multiplayer-tip hidden" id="remoteMultiplayerTip" aria-label="Game readme">
       <div class="remote-multiplayer-tip__title">README</div>
       <div class="remote-multiplayer-tip__body">
         <p>For more projects use the top-right links (GitHub, Discord, or Patreon).</p>
@@ -210,15 +435,120 @@
       (function() {
         var el = document.getElementById('remoteMultiplayerTip');
         if (!el) return;
+        var armed = false;
         function dismiss() {
           el.classList.add('hidden');
+          armed = false;
           document.removeEventListener('keydown', dismiss);
           document.removeEventListener('click', dismiss, true);
           document.removeEventListener('touchstart', dismiss, true);
         }
-        document.addEventListener('keydown', dismiss, { once: true });
-        document.addEventListener('click', dismiss, { once: true, capture: true });
-        document.addEventListener('touchstart', dismiss, { once: true, capture: true });
+        function armDismissal() {
+          if (armed || el.classList.contains('hidden')) return;
+          armed = true;
+          document.addEventListener('keydown', dismiss, { once: true });
+          document.addEventListener('click', dismiss, { once: true, capture: true });
+          document.addEventListener('touchstart', dismiss, { once: true, capture: true });
+        }
+        window.ab3dReadmePopup = {
+          reveal: function() {
+            el.classList.remove('hidden');
+            window.setTimeout(armDismissal, 0);
+          },
+          dismiss: dismiss
+        };
+      })();
+    </script>
+    <script type="text/javascript">
+      (function() {
+        var root = document.getElementById('ab3dPreloader');
+        var statusEl = document.getElementById('ab3dPreloaderStatus');
+        var percentEl = document.getElementById('ab3dPreloaderPercent');
+        var bar = document.getElementById('ab3dPreloaderBar');
+        var barWrap = bar ? bar.parentElement : null;
+        var progress = 0;
+        var runDependencyMax = 0;
+        var finished = false;
+
+        function showReadmePopup() {
+          if (window.ab3dReadmePopup && typeof window.ab3dReadmePopup.reveal === 'function') {
+            window.ab3dReadmePopup.reveal();
+          }
+        }
+
+        if (!root) {
+          window.ab3dPreloader = {
+            setStatus: function() {},
+            setProgress: function() {},
+            setRunDependencies: function() {},
+            finish: showReadmePopup
+          };
+          return;
+        }
+
+        function setProgress(value) {
+          var next = Number(value);
+          if (!isFinite(next)) return;
+          next = Math.max(0, Math.min(1, next));
+          if (!finished) next = Math.min(next, 0.985);
+          progress = Math.max(progress, next);
+          var percent = Math.round(progress * 100);
+          if (bar) bar.style.transform = 'scaleX(' + progress.toFixed(4) + ')';
+          if (percentEl) percentEl.textContent = percent + '%';
+          if (barWrap) barWrap.setAttribute('aria-valuenow', String(percent));
+        }
+
+        function normalizeStatus(text) {
+          var value = String(text || '').replace(/\{message\}/g, 'Please wait').trim();
+          if (!value) return '';
+          if (/Downloading data/i.test(value)) return 'Downloading asset pack';
+          if (/Preparing/i.test(value)) return 'Preparing engine';
+          if (/Running/i.test(value)) return 'Entering complex';
+          return value;
+        }
+
+        function setStatus(text) {
+          var value = normalizeStatus(text);
+          var match = /\((\d+)\/(\d+)\)/.exec(String(text || ''));
+          if (match) {
+            var loaded = Number(match[1]);
+            var total = Number(match[2]);
+            if (total > 0) setProgress(0.06 + Math.min(loaded / total, 1) * 0.78);
+          }
+          if (value && statusEl) statusEl.textContent = value;
+        }
+
+        function setRunDependencies(left) {
+          var remaining = Math.max(0, Number(left) || 0);
+          runDependencyMax = Math.max(runDependencyMax, remaining);
+          if (runDependencyMax > 0) {
+            setProgress(0.84 + (1 - remaining / runDependencyMax) * 0.12);
+          }
+          if (remaining === 0) {
+            setProgress(0.965);
+            setStatus('Starting engine');
+          }
+        }
+
+        function finish() {
+          if (finished) return;
+          finished = true;
+          setStatus('Ready');
+          setProgress(1);
+          root.classList.add('ab3d-preloader--complete');
+          window.setTimeout(function() {
+            root.classList.add('hidden');
+            showReadmePopup();
+          }, 360);
+        }
+
+        window.ab3dPreloader = {
+          setStatus: setStatus,
+          setProgress: setProgress,
+          setRunDependencies: setRunDependencies,
+          finish: finish
+        };
+        setProgress(0.02);
       })();
     </script>
     <div class="credit-overlay" aria-label="Links">
@@ -236,6 +566,11 @@
         const $game = document.querySelector('.game');
         /* Canvas pixel size is owned by SDL (ab3d.ini, then Web aspect preset unless AB3D_WEB_USE_INI_RES=1); do not force viewport size. */
         function resize() { }
+        function finishPreloader() {
+            if (window.ab3dPreloader && typeof window.ab3dPreloader.finish === 'function') {
+                window.ab3dPreloader.finish();
+            }
+        }
         var Module = {
             print(text) {
                 console.log(Array.prototype.slice.call(arguments).join(' '));
@@ -243,7 +578,26 @@
             printErr() {
                 console.error(Array.prototype.slice.call(arguments).join(' '));
             },
-            canvas: document.getElementById('canvas') || $game
+            canvas: document.getElementById('canvas') || $game,
+            setStatus(text) {
+                if (window.ab3dPreloader && typeof window.ab3dPreloader.setStatus === 'function') {
+                    window.ab3dPreloader.setStatus(text);
+                }
+                if (text === '') {
+                    finishPreloader();
+                }
+            },
+            monitorRunDependencies(left) {
+                if (window.ab3dPreloader && typeof window.ab3dPreloader.setRunDependencies === 'function') {
+                    window.ab3dPreloader.setRunDependencies(left);
+                }
+            },
+            onRuntimeInitialized() {
+                if (window.ab3dPreloader && typeof window.ab3dPreloader.setStatus === 'function') {
+                    window.ab3dPreloader.setStatus('Starting engine');
+                }
+            },
+            postRun: [finishPreloader]
         };
         /* Pthread + SharedArrayBuffer gate: see src/emscripten_pthread_gate.js (--pre-js) so it runs before wasm/workers. */
         window.triggerResize = resize;
