@@ -591,9 +591,10 @@ static void enemy_commit_move_context(GameObject *obj, GameState *state,
 
     if (final_zone < 0 ||
         !enemy_zone_contains_point(state, final_zone, ctx->newx, ctx->newz)) {
+        /* Safety rollback only: original scripts change direction from
+         * hitwall set by Collision/MoveObject, not from this C-side guard. */
         ctx->newx = ctx->oldx;
         ctx->newz = ctx->oldz;
-        ctx->hitwall = 1;
         final_zone = old_zone;
         final_in_top = old_in_top;
         forced_rollback = true;
