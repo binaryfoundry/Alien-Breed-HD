@@ -51,6 +51,7 @@ typedef struct GameLoopCtx {
     int ingame_menu_open;
     int ingame_menu_frontend;
     int ingame_menu_result;
+    int front_menu_music_started;
     int ingame_menu_screen;
     int ingame_menu_selected;
     int ingame_menu_autosave_count;

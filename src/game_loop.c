@@ -31,6 +31,9 @@
 #include "audio.h"
 #include "settings.h"
 #include <SDL.h>
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#endif
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -217,6 +220,21 @@ static void apply_zone_order_workaround_level8_zone49(GameState *state, const Pl
         state->zone_order_zones[idx3] = t;
     }
 }
+
+#if defined(__EMSCRIPTEN__)
+EM_JS(int, game_loop_web_front_menu_audio_ready, (void), {
+    if (typeof document !== 'undefined') {
+        if (document.hidden) return 0;
+        if (document.hasFocus && !document.hasFocus()) return 0;
+    }
+    if (typeof Module !== 'undefined' && Module['SDL2'] &&
+        Module['SDL2'].audioContext &&
+        Module['SDL2'].audioContext.state !== 'running') {
+        return 0;
+    }
+    return 1;
+});
+#endif
 
 static void game_loop_prepare_zone_order(GameState *state)
 {
@@ -521,17 +539,38 @@ static int game_loop_move_menu_selection(GameLoopCtx *ctx, int step)
     }
 }
 
-static void game_loop_start_front_menu_music(void)
+static int game_loop_front_menu_music_ready(void)
 {
+#if defined(__EMSCRIPTEN__)
+    return game_loop_web_front_menu_audio_ready();
+#else
+    return 1;
+#endif
+}
+
+static void game_loop_start_front_menu_music(GameLoopCtx *ctx)
+{
+    if (!ctx || ctx->front_menu_music_started)
+        return;
     audio_load_module(FRONT_MENU_TITLE_MODULE);
     audio_init_module();
     audio_play_module();
+    ctx->front_menu_music_started = 1;
 }
 
-static void game_loop_stop_front_menu_music(void)
+static void game_loop_maybe_start_front_menu_music(GameLoopCtx *ctx)
 {
+    if (game_loop_front_menu_music_ready())
+        game_loop_start_front_menu_music(ctx);
+}
+
+static void game_loop_stop_front_menu_music(GameLoopCtx *ctx)
+{
+    if (!ctx)
+        return;
     audio_stop_player();
     audio_unload_module();
+    ctx->front_menu_music_started = 0;
 }
 
 static void game_loop_play_menu_sample(int sample_id)
@@ -1019,7 +1058,7 @@ void game_loop_front_menu_init(GameLoopCtx *ctx, GameState *state)
     game_loop_clear_queued_actions();
     game_loop_pause_timing(state, ctx);
     input_set_menu_mouse_active(true, state->key_map);
-    game_loop_start_front_menu_music();
+    game_loop_maybe_start_front_menu_music(ctx);
     game_loop_draw_ingame_menu(state, ctx);
 }
 
@@ -1035,12 +1074,13 @@ int game_loop_front_menu_tick(GameState *state, GameLoopCtx *ctx)
 #endif
     if (input_fullscreen_toggle_requested())
         display_toggle_fullscreen();
+    game_loop_maybe_start_front_menu_music(ctx);
 
     if (input_quit_requested()) {
         input_set_menu_mouse_active(false, state->key_map);
         ctx->ingame_menu_open = 0;
         ctx->ingame_menu_result = GAME_LOOP_FRONT_MENU_EXIT;
-        game_loop_stop_front_menu_music();
+        game_loop_stop_front_menu_music(ctx);
         return ctx->ingame_menu_result;
     }
 
@@ -1048,7 +1088,7 @@ int game_loop_front_menu_tick(GameState *state, GameLoopCtx *ctx)
         game_loop_update_ingame_menu(state, ctx);
 
     if (ctx->ingame_menu_result != GAME_LOOP_FRONT_MENU_NONE)
-        game_loop_stop_front_menu_music();
+        game_loop_stop_front_menu_music(ctx);
 
     return ctx->ingame_menu_result;
 }
