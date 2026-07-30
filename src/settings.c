@@ -28,6 +28,7 @@ static void log_effective_settings(const GameState *state,
 #if defined(__EMSCRIPTEN__)
 #define SETTINGS_WEB_MOUSE_LOOK_KEY "ab3d1.settings.mouse_look"
 #define SETTINGS_WEB_SHOW_FPS_KEY   "ab3d1.settings.show_fps"
+#define SETTINGS_WEB_VOLUME_KEY     "ab3d1.settings.volume"
 
 EM_JS(int, settings_web_local_storage_get_int,
       (const char *key_ptr, int default_value), {
@@ -37,6 +38,8 @@ EM_JS(int, settings_web_local_storage_get_int,
         var value = localStorage.getItem(key);
         if (value === null) return default_value;
         value = String(value).toLowerCase();
+        var n = parseInt(value, 10);
+        if (isFinite(n) && String(n) === value) return n | 0;
         return (value === '1' || value === 'true' ||
                 value === 'yes' || value === 'on') ? 1 : 0;
     } catch (e) {
@@ -50,7 +53,7 @@ EM_JS(int, settings_web_local_storage_set_int,
     var key = UTF8ToString(key_ptr);
     try {
         if (typeof localStorage === 'undefined') return 0;
-        localStorage.setItem(key, value ? '1' : '0');
+        localStorage.setItem(key, String(value | 0));
         return 1;
     } catch (e) {
         console.warn('[SETTINGS] localStorage write failed', e);
@@ -176,7 +179,8 @@ static int settings_write_menu_options_line(FILE *out,
                                             const char *line,
                                             const GameState *state,
                                             int *saw_mouse_look,
-                                            int *saw_show_fps)
+                                            int *saw_show_fps,
+                                            int *saw_volume)
 {
     char key[64];
 
@@ -195,6 +199,11 @@ static int settings_write_menu_options_line(FILE *out,
                        strcmp(key, "fps_counter") == 0 ? "fps_counter" : "show_fps",
                        state->cfg_show_fps ? 1 : 0) >= 0;
     }
+    if (strcmp(key, "volume") == 0) {
+        *saw_volume = 1;
+        return fprintf(out, "volume=%d\n",
+                       (int)state->cfg_volume) >= 0;
+    }
 
     return fputs(line, out) >= 0;
 }
@@ -202,9 +211,10 @@ static int settings_write_menu_options_line(FILE *out,
 static int settings_append_missing_menu_options(FILE *out,
                                                 const GameState *state,
                                                 int saw_mouse_look,
-                                                int saw_show_fps)
+                                                int saw_show_fps,
+                                                int saw_volume)
 {
-    if (saw_mouse_look && saw_show_fps) return 1;
+    if (saw_mouse_look && saw_show_fps && saw_volume) return 1;
     if (fprintf(out, "\n# Runtime menu options\n") < 0) return 0;
     if (!saw_mouse_look &&
         fprintf(out, "mouse_look=%d\n", state->cfg_mouse_look ? 1 : 0) < 0) {
@@ -212,6 +222,10 @@ static int settings_append_missing_menu_options(FILE *out,
     }
     if (!saw_show_fps &&
         fprintf(out, "show_fps=%d\n", state->cfg_show_fps ? 1 : 0) < 0) {
+        return 0;
+    }
+    if (!saw_volume &&
+        fprintf(out, "volume=%d\n", (int)state->cfg_volume) < 0) {
         return 0;
     }
     return 1;
@@ -227,6 +241,7 @@ static void settings_save_menu_options_to_ini(const GameState *state)
     char line[1024];
     int saw_mouse_look = 0;
     int saw_show_fps = 0;
+    int saw_volume = 0;
     int ok = 1;
 
     if (!state) return;
@@ -271,7 +286,8 @@ static void settings_save_menu_options_to_ini(const GameState *state)
         while (fgets(line, sizeof(line), in)) {
             if (!settings_write_menu_options_line(out, line, state,
                                                   &saw_mouse_look,
-                                                  &saw_show_fps)) {
+                                                  &saw_show_fps,
+                                                  &saw_volume)) {
                 ok = 0;
                 break;
             }
@@ -283,7 +299,8 @@ static void settings_save_menu_options_to_ini(const GameState *state)
     if (ok) {
         ok = settings_append_missing_menu_options(out, state,
                                                   saw_mouse_look,
-                                                  saw_show_fps);
+                                                  saw_show_fps,
+                                                  saw_volume);
     }
     if (fclose(out) != 0) ok = 0;
 
@@ -318,6 +335,14 @@ static void settings_apply_persistent_menu_options(GameState *state)
         settings_web_local_storage_get_int(
             SETTINGS_WEB_SHOW_FPS_KEY,
             state->cfg_show_fps ? 1 : 0) != 0;
+    {
+        int volume = settings_web_local_storage_get_int(
+            SETTINGS_WEB_VOLUME_KEY,
+            (int)state->cfg_volume);
+        if (volume >= 0 && volume <= 100) {
+            state->cfg_volume = (int16_t)volume;
+        }
+    }
 #else
     (void)state;
 #endif
@@ -529,6 +554,10 @@ static void apply_runtime_constraints(GameState *state)
 #else
     (void)state;
 #endif
+    if (state->cfg_volume < 0)
+        state->cfg_volume = 0;
+    else if (state->cfg_volume > 100)
+        state->cfg_volume = 100;
 }
 
 static void log_effective_settings(const GameState *state, const char *source_label)
@@ -556,7 +585,7 @@ static void log_effective_settings(const GameState *state, const char *source_la
                state->cfg_render_threads ? 1 : 0,
                (int)state->cfg_render_threads_max,
                (int)state->cfg_volume,
-             (int)state->cfg_audio_buffer_samples,
+               (int)state->cfg_audio_buffer_samples,
                (int)state->cfg_y_proj_scale,
                state->cfg_billboard_sprite_rendering_enhancement ? 1 : 0,
                state->cfg_weapon_draw ? 1 : 0,
@@ -683,7 +712,10 @@ void settings_save_menu_options(const GameState *state)
             state->cfg_mouse_look ? 1 : 0) ||
         !settings_web_local_storage_set_int(
             SETTINGS_WEB_SHOW_FPS_KEY,
-            state->cfg_show_fps ? 1 : 0)) {
+            state->cfg_show_fps ? 1 : 0) ||
+        !settings_web_local_storage_set_int(
+            SETTINGS_WEB_VOLUME_KEY,
+            (int)state->cfg_volume)) {
         printf("[SETTINGS] menu options localStorage save failed\n");
     }
 #else

@@ -45,6 +45,8 @@
 #define KEY_SPACE   0x40
 #define KEY_UP      0x4C
 #define KEY_DOWN    0x4D
+#define KEY_RIGHT   0x4E
+#define KEY_LEFT    0x4F
 
 #define INGAME_MENU_SCREEN_MAIN     0
 #define INGAME_MENU_SCREEN_NEW_GAME 1
@@ -56,8 +58,9 @@
 #define INGAME_MENU_AUTOSAVES   2
 #define INGAME_MENU_MOUSE_LOOK  3
 #define INGAME_MENU_FPS_COUNTER 4
-#define INGAME_MENU_EXIT        5
-#define INGAME_MENU_COUNT       6
+#define INGAME_MENU_VOLUME      5
+#define INGAME_MENU_EXIT        6
+#define INGAME_MENU_COUNT       7
 
 #define INGAME_MENU_AUTOSAVE_BACK PLAYER_AUTOSAVE_SLOT_COUNT
 
@@ -76,6 +79,7 @@
 #define INGAME_MENU_SFX_MOVE   10
 #define INGAME_MENU_SFX_ACCEPT 11
 #define INGAME_MENU_SFX_VOLUME 50
+#define INGAME_MENU_VOLUME_STEP 10
 
 /* Maximum frame count before clamping */
 #define MAX_TEMP_FRAMES 15
@@ -486,6 +490,8 @@ static int game_loop_main_menu_item_at_line(const GameLoopCtx *ctx, int line)
     row++;
     if (line == row) return INGAME_MENU_FPS_COUNTER;
     row++;
+    if (line == row) return INGAME_MENU_VOLUME;
+    row++;
     if (game_loop_main_menu_item_visible(ctx, INGAME_MENU_EXIT) &&
         line == row)
         return INGAME_MENU_EXIT;
@@ -548,8 +554,9 @@ static int game_loop_front_menu_music_ready(void)
 #endif
 }
 
-static void game_loop_start_front_menu_music(GameLoopCtx *ctx)
+static void game_loop_start_front_menu_music(GameState *state, GameLoopCtx *ctx)
 {
+    (void)state;
     if (!ctx || ctx->front_menu_music_started)
         return;
     audio_load_module(FRONT_MENU_TITLE_MODULE);
@@ -558,10 +565,11 @@ static void game_loop_start_front_menu_music(GameLoopCtx *ctx)
     ctx->front_menu_music_started = 1;
 }
 
-static void game_loop_maybe_start_front_menu_music(GameLoopCtx *ctx)
+static void game_loop_maybe_start_front_menu_music(GameState *state,
+                                                   GameLoopCtx *ctx)
 {
     if (game_loop_front_menu_music_ready())
-        game_loop_start_front_menu_music(ctx);
+        game_loop_start_front_menu_music(state, ctx);
 }
 
 static void game_loop_stop_front_menu_music(GameLoopCtx *ctx)
@@ -573,22 +581,53 @@ static void game_loop_stop_front_menu_music(GameLoopCtx *ctx)
     ctx->front_menu_music_started = 0;
 }
 
-static void game_loop_play_menu_sample(int sample_id)
+static void game_loop_play_menu_sample(GameState *state, int sample_id)
 {
+    (void)state;
     /* Menu overlays can run while gameplay logic is paused, so deliberate UI
      * sounds need their own SFX frame marker instead of waiting for logic. */
     audio_begin_frame();
     audio_play_sample(sample_id, INGAME_MENU_SFX_VOLUME);
 }
 
-static void game_loop_play_menu_move_sound(void)
+static void game_loop_play_menu_move_sound(GameState *state)
 {
-    game_loop_play_menu_sample(INGAME_MENU_SFX_MOVE);
+    game_loop_play_menu_sample(state, INGAME_MENU_SFX_MOVE);
 }
 
-static void game_loop_play_menu_accept_sound(void)
+static void game_loop_play_menu_accept_sound(GameState *state)
 {
-    game_loop_play_menu_sample(INGAME_MENU_SFX_ACCEPT);
+    game_loop_play_menu_sample(state, INGAME_MENU_SFX_ACCEPT);
+}
+
+static void game_loop_draw_ingame_menu(GameState *state, const GameLoopCtx *ctx);
+
+static void game_loop_apply_volume(GameState *state)
+{
+    if (!state) return;
+    if (state->cfg_volume < 0)
+        state->cfg_volume = 0;
+    else if (state->cfg_volume > 100)
+        state->cfg_volume = 100;
+    audio_set_master_volume((int)state->cfg_volume);
+    settings_save_menu_options(state);
+}
+
+static void game_loop_adjust_volume(GameState *state,
+                                    GameLoopCtx *ctx,
+                                    int delta)
+{
+    int volume;
+    if (!state || !ctx) return;
+    volume = (int)state->cfg_volume + delta;
+    if (volume < 0) volume = 0;
+    if (volume > 100) volume = 100;
+    if (volume == state->cfg_volume) return;
+    state->cfg_volume = (int16_t)volume;
+    game_loop_apply_volume(state);
+    game_loop_play_menu_accept_sound(state);
+    game_loop_pause_timing(state, ctx);
+    game_loop_draw_ingame_menu(state, ctx);
 }
 
 static void game_loop_present_menu(GameState *state, const GameLoopCtx *ctx)
@@ -695,6 +734,12 @@ static void game_loop_draw_ingame_menu(GameState *state, const GameLoopCtx *ctx)
     snprintf(line, sizeof(line), "%c FPS COUNTER  : %s",
              (ctx->ingame_menu_selected == INGAME_MENU_FPS_COUNTER) ? '>' : ' ',
              (state && state->cfg_show_fps) ? "ON" : "OFF");
+    display_draw_line_of_text(line, row);
+    row++;
+
+    snprintf(line, sizeof(line), "%c VOLUME       : %3d%%",
+             (ctx->ingame_menu_selected == INGAME_MENU_VOLUME) ? '>' : ' ',
+             state ? (int)state->cfg_volume : 100);
     display_draw_line_of_text(line, row);
     row++;
 
@@ -894,6 +939,14 @@ static void game_loop_select_ingame_menu_item(GameState *state, GameLoopCtx *ctx
         settings_save_menu_options(state);
         break;
 
+    case INGAME_MENU_VOLUME:
+        {
+            int volume = (int)state->cfg_volume + INGAME_MENU_VOLUME_STEP;
+            state->cfg_volume = (int16_t)((volume > 100) ? 0 : volume);
+        }
+        game_loop_apply_volume(state);
+        break;
+
     case INGAME_MENU_EXIT:
         input_set_menu_mouse_active(false, state->key_map);
         display_clear_text_screen();
@@ -930,10 +983,10 @@ static int game_loop_update_ingame_menu_mouse(GameState *state, GameLoopCtx *ctx
 
     if (mouse.wheel_y > 0) {
         if (game_loop_move_menu_selection(ctx, -1))
-            game_loop_play_menu_move_sound();
+            game_loop_play_menu_move_sound(state);
     } else if (mouse.wheel_y < 0) {
         if (game_loop_move_menu_selection(ctx, 1))
-            game_loop_play_menu_move_sound();
+            game_loop_play_menu_move_sound(state);
     }
 
     if ((mouse.moved || mouse.left_pressed) && mouse.valid &&
@@ -943,10 +996,10 @@ static int game_loop_update_ingame_menu_mouse(GameState *state, GameLoopCtx *ctx
         if (item >= 0) {
             if (ctx->ingame_menu_selected != item) {
                 ctx->ingame_menu_selected = item;
-                game_loop_play_menu_move_sound();
+                game_loop_play_menu_move_sound(state);
             }
             if (mouse.left_pressed) {
-                game_loop_play_menu_accept_sound();
+                game_loop_play_menu_accept_sound(state);
                 input_consume_menu_mouse_events();
                 game_loop_clear_queued_actions();
                 game_loop_select_ingame_menu_item(state, ctx);
@@ -980,7 +1033,7 @@ static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
             game_loop_close_ingame_menu(state, ctx);
         }
         if (play_back_sound)
-            game_loop_play_menu_accept_sound();
+            game_loop_play_menu_accept_sound(state);
         return 1;
     }
     if (input_key_pressed(state->key_map, KEY_ESC)) {
@@ -1006,16 +1059,30 @@ static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
             state->running = false;
         }
         if (play_back_sound)
-            game_loop_play_menu_accept_sound();
+            game_loop_play_menu_accept_sound(state);
         return 1;
     }
 
     bool menu_up = input_consume_key_press(KEY_UP);
     bool menu_down = input_consume_key_press(KEY_DOWN);
     if (menu_up && game_loop_move_menu_selection(ctx, -1))
-        game_loop_play_menu_move_sound();
+        game_loop_play_menu_move_sound(state);
     if (menu_down && game_loop_move_menu_selection(ctx, 1))
-        game_loop_play_menu_move_sound();
+        game_loop_play_menu_move_sound(state);
+
+    bool menu_left = input_consume_key_press(KEY_LEFT);
+    bool menu_right = input_consume_key_press(KEY_RIGHT);
+    if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_MAIN &&
+        ctx->ingame_menu_selected == INGAME_MENU_VOLUME &&
+        (menu_left || menu_right)) {
+        int delta = 0;
+        if (menu_left) delta -= INGAME_MENU_VOLUME_STEP;
+        if (menu_right) delta += INGAME_MENU_VOLUME_STEP;
+        if (delta != 0)
+            game_loop_adjust_volume(state, ctx, delta);
+        game_loop_clear_queued_actions();
+        return 1;
+    }
 
     if (game_loop_update_ingame_menu_mouse(state, ctx))
         return 1;
@@ -1023,7 +1090,7 @@ static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
     bool menu_accept = input_consume_key_press(KEY_RETURN);
     menu_accept = input_consume_key_press(KEY_SPACE) || menu_accept;
     if (menu_accept) {
-        game_loop_play_menu_accept_sound();
+        game_loop_play_menu_accept_sound(state);
         game_loop_clear_queued_actions();
         game_loop_select_ingame_menu_item(state, ctx);
         return 1;
@@ -1058,7 +1125,7 @@ void game_loop_front_menu_init(GameLoopCtx *ctx, GameState *state)
     game_loop_clear_queued_actions();
     game_loop_pause_timing(state, ctx);
     input_set_menu_mouse_active(true, state->key_map);
-    game_loop_maybe_start_front_menu_music(ctx);
+    game_loop_maybe_start_front_menu_music(state, ctx);
     game_loop_draw_ingame_menu(state, ctx);
 }
 
@@ -1074,7 +1141,7 @@ int game_loop_front_menu_tick(GameState *state, GameLoopCtx *ctx)
 #endif
     if (input_fullscreen_toggle_requested())
         display_toggle_fullscreen();
-    game_loop_maybe_start_front_menu_music(ctx);
+    game_loop_maybe_start_front_menu_music(state, ctx);
 
     if (input_quit_requested()) {
         input_set_menu_mouse_active(false, state->key_map);

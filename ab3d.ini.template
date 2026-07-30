@@ -67,7 +67,7 @@ crosshair=1
 # windowed = resizable window using render_width/render_height
 display_mode=fullscreen
 
-# Master sound effects volume: 0 = silent, 100 = full (linear scale).
+# Master game audio volume: 0 = silent, 100 = full (linear scale).
 volume=100
 
 # SDL audio callback buffer size in sample frames.

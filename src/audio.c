@@ -115,7 +115,7 @@ static LoadedSample      g_samples[MAX_SAMPLES];
 static Channel           g_channels[MAX_CHANNELS];
 static MusicTrack        g_music;
 static int               g_audio_ready = 0;
-static int               g_master_volume = 100; /* 0..100, scales per-sample volume in audio_play_sample */
+static int               g_master_volume = 100; /* 0..100, scales music and SFX playback */
 /* Per-game-frame SFX dedupe:
  * g_sfx_frame_id is advanced by audio_begin_frame() once per logic tick.
  * A sample can be queued at most once for each frame id. */
