@@ -194,12 +194,27 @@ static uintptr_t    g_key_hud_tex_tag;
 static void display_key_hud_free_textures(void);
 
 /* HUD digit strips: 0 = health %, 1 = ammo count (fonts, e.g. health_digits.png). */
-static SDL_Texture *g_hud_digit_tex[2];
-static int          g_hud_digit_tex_w[2];
-static int          g_hud_digit_tex_h[2];
+#define DISPLAY_HUD_DIGIT_KIND_COUNT  2
+#define DISPLAY_HUD_DIGIT_COUNT       10
+#define DISPLAY_HUD_DIGIT_CELL_W      9
+#define DISPLAY_HUD_DIGIT_CELL_H      11
+#define DISPLAY_HUD_DIGIT_STRIDE      11
+#define DISPLAY_HUD_DIGIT_SHEET_W     108
+static SDL_Texture *g_hud_digit_tex[DISPLAY_HUD_DIGIT_KIND_COUNT];
+static int          g_hud_digit_tex_w[DISPLAY_HUD_DIGIT_KIND_COUNT];
+static int          g_hud_digit_tex_h[DISPLAY_HUD_DIGIT_KIND_COUNT];
+static GLuint       g_hud_digit_array_tex[DISPLAY_HUD_DIGIT_KIND_COUNT];
+static int          g_hud_digit_array_ok[DISPLAY_HUD_DIGIT_KIND_COUNT];
+static int          g_hud_digit_array_upload_attempted[DISPLAY_HUD_DIGIT_KIND_COUNT];
 static int          g_hud_digits_load_attempted;
+static const char *const g_hud_digit_paths[DISPLAY_HUD_DIGIT_KIND_COUNT] = {
+    "fonts/health_digits.png",
+    "fonts/ammo_digits.png"
+};
 static void         display_hud_digits_free(void);
 static void         display_hud_digits_ensure_loaded(void);
+static void         display_hud_digit_upload_array_texture(int kind);
+static int          hud_digit_tex_scale_k(int tex_w, int tex_h);
 
 /* Printable ASCII bitmap font from fonts/ascii_font/ascii_font_green_black_metadata_v2.json. */
 #define DISPLAY_ASCII_FONT_PATH       "fonts/ascii_font/ascii_font_green_black_atlas_v2.png"
@@ -1003,6 +1018,10 @@ static int display_gl_hud_try_init(void)
     g_gl_hud_ok = 1;
     if (g_ascii_font_tex && !g_ascii_font_array_ok)
         display_ascii_font_upload_array_texture();
+    for (int i = 0; i < DISPLAY_HUD_DIGIT_KIND_COUNT; i++) {
+        if (g_hud_digit_tex[i] && !g_hud_digit_array_ok[i])
+            display_hud_digit_upload_array_texture(i);
+    }
     printf("[DISPLAY] HUD: GL overlay (SDL_GL_BindTexture + GLSL)\n");
     return 1;
 }
@@ -1226,22 +1245,16 @@ static void display_gl_texture_blit(SDL_Texture *tex, const SDL_Rect *src_opt, c
     SDL_GL_UnbindTexture(tex);
 }
 
-static int display_gl_font_glyph_blit(int glyph_idx, const SDL_Rect *dst, Uint8 alpha)
+static int display_gl_array_layer_blit(GLuint tex, int layer, int layer_count,
+                                       float u0, float v0, float u1, float v1,
+                                       const SDL_Rect *dst, Uint8 alpha)
 {
-    if (!dst || glyph_idx < 0 || glyph_idx >= DISPLAY_ASCII_COUNT)
+    if (!dst || !tex || layer < 0 || layer >= layer_count)
         return 0;
-    if (!g_ascii_font_array_ok || !g_ascii_font_array_tex ||
-        !g_gl_unpack_ok || !g_gl_hud_ok || !g_gl_prog_hud_font ||
-        g_gl_overlay_win_w < 1) {
+    if (!g_gl_unpack_ok || !g_gl_hud_ok || !g_gl_prog_hud_font ||
+        !g_gl_tex_parameteri2 || g_gl_overlay_win_w < 1) {
         return 0;
     }
-
-    float u0 = (float)DISPLAY_ASCII_DRAW_X / (float)DISPLAY_ASCII_CELL_W;
-    float v0 = (float)DISPLAY_ASCII_DRAW_Y / (float)DISPLAY_ASCII_CELL_H;
-    float u1 = (float)(DISPLAY_ASCII_DRAW_X + DISPLAY_ASCII_DRAW_W) /
-               (float)DISPLAY_ASCII_CELL_W;
-    float v1 = (float)(DISPLAY_ASCII_DRAW_Y + DISPLAY_ASCII_DRAW_H) /
-               (float)DISPLAY_ASCII_CELL_H;
 
     int wx = g_gl_overlay_win_w, wy = g_gl_overlay_win_h;
     float nx0, ny0, nx1, ny1, nx2, ny2, nx3, ny3;
@@ -1263,7 +1276,7 @@ static int display_gl_font_glyph_blit(int glyph_idx, const SDL_Rect *dst, Uint8 
     };
 
     g_gl_active_texture(GL_TEXTURE0);
-    g_gl_bind_texture(DGL_TEXTURE_2D_ARRAY, g_ascii_font_array_tex);
+    g_gl_bind_texture(DGL_TEXTURE_2D_ARRAY, tex);
     g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_MIN_FILTER,
                          (GLint)DGL_LINEAR_MIPMAP_LINEAR);
     g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_MAG_FILTER,
@@ -1272,13 +1285,32 @@ static int display_gl_font_glyph_blit(int glyph_idx, const SDL_Rect *dst, Uint8 
     g_gl_uniform1i(g_gl_hud_loc_font_tex, 0);
     g_gl_uniform4f(g_gl_hud_loc_font_color, 1.0f, 1.0f, 1.0f,
                    (float)alpha / 255.0f);
-    g_gl_uniform1f(g_gl_hud_loc_font_layer, (float)glyph_idx);
+    g_gl_uniform1f(g_gl_hud_loc_font_layer, (float)layer);
     g_gl_bind_vertex_array(g_gl_hud_vao_tex);
     g_gl_bind_buffer(0x8892, g_gl_hud_vbo);
     g_gl_buffer_data(0x8892, (ptrdiff_t)sizeof(buf), buf, GL_STREAM_DRAW);
     g_gl_draw_arrays(GL_TRIANGLES, 0, 6);
     g_gl_bind_texture(DGL_TEXTURE_2D_ARRAY, 0);
     return 1;
+}
+
+static int display_gl_font_glyph_blit(int glyph_idx, const SDL_Rect *dst, Uint8 alpha)
+{
+    if (glyph_idx < 0 || glyph_idx >= DISPLAY_ASCII_COUNT)
+        return 0;
+    if (!g_ascii_font_array_ok || !g_ascii_font_array_tex)
+        return 0;
+
+    float u0 = (float)DISPLAY_ASCII_DRAW_X / (float)DISPLAY_ASCII_CELL_W;
+    float v0 = (float)DISPLAY_ASCII_DRAW_Y / (float)DISPLAY_ASCII_CELL_H;
+    float u1 = (float)(DISPLAY_ASCII_DRAW_X + DISPLAY_ASCII_DRAW_W) /
+               (float)DISPLAY_ASCII_CELL_W;
+    float v1 = (float)(DISPLAY_ASCII_DRAW_Y + DISPLAY_ASCII_DRAW_H) /
+               (float)DISPLAY_ASCII_CELL_H;
+
+    return display_gl_array_layer_blit(g_ascii_font_array_tex, glyph_idx,
+                                       DISPLAY_ASCII_COUNT, u0, v0, u1, v1,
+                                       dst, alpha);
 }
 
 static void display_gl_solid_rect_fill(const SDL_Rect *dst, Uint8 r, Uint8 g, Uint8 b, Uint8 a)
@@ -3418,7 +3450,13 @@ static SDL_Texture *display_key_hud_texture_for_frame(int frame_idx)
 
 static void display_hud_digits_free(void)
 {
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < DISPLAY_HUD_DIGIT_KIND_COUNT; i++) {
+        if (g_hud_digit_array_tex[i] && g_gl_delete_textures) {
+            g_gl_delete_textures(1, &g_hud_digit_array_tex[i]);
+        }
+        g_hud_digit_array_tex[i] = 0;
+        g_hud_digit_array_ok[i] = 0;
+        g_hud_digit_array_upload_attempted[i] = 0;
         if (g_hud_digit_tex[i]) {
             SDL_DestroyTexture(g_hud_digit_tex[i]);
             g_hud_digit_tex[i] = NULL;
@@ -3429,32 +3467,134 @@ static void display_hud_digits_free(void)
     g_hud_digits_load_attempted = 0;
 }
 
+static void display_hud_digit_upload_array_texture(int kind)
+{
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+    if (kind < 0 || kind >= DISPLAY_HUD_DIGIT_KIND_COUNT)
+        return;
+
+    int atlas_w = 0, atlas_h = 0;
+    unsigned char *atlas = NULL;
+    unsigned char *layers = NULL;
+
+    g_hud_digit_array_ok[kind] = 0;
+    if (!g_gl_unpack_ok || !g_gl_hud_ok || !g_gl_prog_hud_font)
+        return;
+    if (!g_gl_gen_textures || !g_gl_bind_texture || !g_gl_tex_image_3d ||
+        !g_gl_tex_parameteri2 || !g_gl_delete_textures || !g_gl_pixel_storei)
+        return;
+    if (g_hud_digit_array_upload_attempted[kind])
+        return;
+    g_hud_digit_array_upload_attempted[kind] = 1;
+
+    if (!g_gl_generate_mipmap)
+        display_load_gl_mipmap_procs();
+    if (!g_gl_generate_mipmap)
+        return;
+
+    atlas = display_load_png_rgba_asset(g_hud_digit_paths[kind],
+                                        &atlas_w, &atlas_h,
+                                        "HUD digits");
+    if (!atlas)
+        return;
+
+    int scale_k = hud_digit_tex_scale_k(atlas_w, atlas_h);
+    if (scale_k < 1) {
+        stbi_image_free(atlas);
+        return;
+    }
+
+    int layer_w = DISPLAY_HUD_DIGIT_CELL_W * scale_k;
+    int layer_h = DISPLAY_HUD_DIGIT_CELL_H * scale_k;
+    int stride = DISPLAY_HUD_DIGIT_STRIDE * scale_k;
+    size_t layer_bytes = (size_t)layer_w * (size_t)layer_h * 4u;
+    size_t total_bytes = layer_bytes * (size_t)DISPLAY_HUD_DIGIT_COUNT;
+
+    layers = (unsigned char *)malloc(total_bytes);
+    if (!layers) {
+        stbi_image_free(atlas);
+        return;
+    }
+    memset(layers, 0, total_bytes);
+
+    for (int digit = 0; digit < DISPLAY_HUD_DIGIT_COUNT; digit++) {
+        int src_x = digit * stride;
+        unsigned char *dst_layer = layers + (size_t)digit * layer_bytes;
+        if (src_x + layer_w > atlas_w)
+            continue;
+        for (int y = 0; y < layer_h; y++) {
+            const unsigned char *src =
+                atlas + ((size_t)y * (size_t)atlas_w +
+                         (size_t)src_x) * 4u;
+            unsigned char *dst =
+                dst_layer + (size_t)y * (size_t)layer_w * 4u;
+            memcpy(dst, src, (size_t)layer_w * 4u);
+        }
+    }
+
+    if (g_hud_digit_array_tex[kind]) {
+        g_gl_delete_textures(1, &g_hud_digit_array_tex[kind]);
+        g_hud_digit_array_tex[kind] = 0;
+    }
+
+    if (g_gl_get_error) {
+        for (int i = 0; i < 8 && g_gl_get_error() != 0; i++) {
+        }
+    }
+
+    g_gl_gen_textures(1, &g_hud_digit_array_tex[kind]);
+    if (!g_hud_digit_array_tex[kind]) {
+        free(layers);
+        stbi_image_free(atlas);
+        return;
+    }
+    g_gl_bind_texture(DGL_TEXTURE_2D_ARRAY, g_hud_digit_array_tex[kind]);
+    g_gl_pixel_storei(GL_UNPACK_ALIGNMENT, 1);
+    g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_MIN_FILTER,
+                         (GLint)DGL_LINEAR_MIPMAP_LINEAR);
+    g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_MAG_FILTER,
+                         (GLint)GL_NEAREST);
+    g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_WRAP_S,
+                         (GLint)DGL_CLAMP_TO_EDGE);
+    g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_WRAP_T,
+                         (GLint)DGL_CLAMP_TO_EDGE);
+    g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_WRAP_R,
+                         (GLint)DGL_CLAMP_TO_EDGE);
+    g_gl_tex_image_3d(DGL_TEXTURE_2D_ARRAY, 0, (GLint)GL_RGBA8,
+                      layer_w, layer_h, DISPLAY_HUD_DIGIT_COUNT, 0,
+                      GL_RGBA, GL_UNSIGNED_BYTE, layers);
+    g_gl_generate_mipmap(DGL_TEXTURE_2D_ARRAY);
+    g_gl_pixel_storei(GL_UNPACK_ALIGNMENT, 4);
+    g_gl_bind_texture(DGL_TEXTURE_2D_ARRAY, 0);
+
+    if (g_gl_get_error && g_gl_get_error() != 0) {
+        g_gl_delete_textures(1, &g_hud_digit_array_tex[kind]);
+        g_hud_digit_array_tex[kind] = 0;
+    } else {
+        g_hud_digit_array_ok[kind] = 1;
+        printf("[DISPLAY] HUD digits: GL texture array mipmaps active for %s\n",
+               g_hud_digit_paths[kind]);
+    }
+
+    free(layers);
+    stbi_image_free(atlas);
+#else
+    (void)kind;
+#endif
+}
+
 static void display_hud_digits_ensure_loaded(void)
 {
     if (g_hud_digits_load_attempted || !g_sdl_ren) return;
     g_hud_digits_load_attempted = 1;
 
-    const char *names[2] = { "health_digits.png", "ammo_digits.png" };
-    char *base = SDL_GetBasePath();
-    char path[512];
-
-    for (int i = 0; i < 2; i++) {
-        int w = 0, h = 0, comp = 0;
+    for (int i = 0; i < DISPLAY_HUD_DIGIT_KIND_COUNT; i++) {
+        int w = 0, h = 0;
         unsigned char *rgba = NULL;
 
-        if (base) {
-            int plen = snprintf(path, sizeof(path), "%sfonts/%s", base, names[i]);
-            if (plen > 0 && plen < (int)sizeof(path))
-                rgba = stbi_load(path, &w, &h, &comp, 4);
-        }
+        rgba = display_load_png_rgba_asset(g_hud_digit_paths[i], &w, &h,
+                                           "HUD digits");
         if (!rgba) {
-            int plen = snprintf(path, sizeof(path), "fonts/%s", names[i]);
-            if (plen > 0 && plen < (int)sizeof(path))
-                rgba = stbi_load(path, &w, &h, &comp, 4);
-        }
-        if (!rgba) {
-            printf("[DISPLAY] HUD digits: could not load %s (%s)\n", names[i],
-                   stbi_failure_reason() ? stbi_failure_reason() : "?");
             continue;
         }
 
@@ -3478,7 +3618,8 @@ static void display_hud_digits_ensure_loaded(void)
         if (!t || SDL_UpdateTexture(t, NULL, argb, (int)(w * (int)sizeof(uint32_t))) != 0) {
             if (t) SDL_DestroyTexture(t);
             free(argb);
-            printf("[DISPLAY] HUD digits: SDL texture failed for %s\n", names[i]);
+            printf("[DISPLAY] HUD digits: SDL texture failed for %s\n",
+                   g_hud_digit_paths[i]);
             continue;
         }
         free(argb);
@@ -3490,10 +3631,8 @@ static void display_hud_digits_ensure_loaded(void)
         g_hud_digit_tex[i] = t;
         g_hud_digit_tex_w[i] = w;
         g_hud_digit_tex_h[i] = h;
+        display_hud_digit_upload_array_texture(i);
     }
-
-    if (base)
-        SDL_free(base);
 }
 
 /*
@@ -3531,23 +3670,27 @@ static void hud_key_row_layout(int lay_w, int lay_h, int *margin, int *kh, int *
  */
 static int hud_digit_tex_scale_k(int tex_w, int tex_h)
 {
-    if (tex_h < 11 || tex_w < 108) return 0;
-    if (tex_h % 11 != 0) return 0;
-    int k = tex_h / 11;
-    if (k < 1 || tex_w != 108 * k) return 0;
+    if (tex_h < DISPLAY_HUD_DIGIT_CELL_H ||
+        tex_w < DISPLAY_HUD_DIGIT_SHEET_W) {
+        return 0;
+    }
+    if (tex_h % DISPLAY_HUD_DIGIT_CELL_H != 0) return 0;
+    int k = tex_h / DISPLAY_HUD_DIGIT_CELL_H;
+    if (k < 1 || tex_w != DISPLAY_HUD_DIGIT_SHEET_W * k) return 0;
     return k;
 }
 
 static void hud_digit_src_rect(int tex_w, int tex_h, int digit, SDL_Rect *src)
 {
     if (digit < 0) digit = 0;
-    if (digit > 9) digit = 9;
+    if (digit >= DISPLAY_HUD_DIGIT_COUNT)
+        digit = DISPLAY_HUD_DIGIT_COUNT - 1;
 
     int k = hud_digit_tex_scale_k(tex_w, tex_h);
     if (k > 0) {
-        int stride = 11 * k;
-        int cell_w = 9 * k;
-        int row_h = 11 * k;
+        int stride = DISPLAY_HUD_DIGIT_STRIDE * k;
+        int cell_w = DISPLAY_HUD_DIGIT_CELL_W * k;
+        int row_h = DISPLAY_HUD_DIGIT_CELL_H * k;
         src->x = digit * stride;
         src->y = 0;
         src->w = cell_w;
@@ -3556,19 +3699,48 @@ static void hud_digit_src_rect(int tex_w, int tex_h, int digit, SDL_Rect *src)
     }
 
     /* Fallback: generic 10-column atlas */
-    int cell = tex_w / 10;
+    int cell = tex_w / DISPLAY_HUD_DIGIT_COUNT;
     if (cell < 1) cell = 1;
     src->x = digit * cell;
     src->y = 0;
-    src->w = (digit == 9) ? (tex_w - digit * cell) : cell;
+    src->w = (digit == DISPLAY_HUD_DIGIT_COUNT - 1) ?
+        (tex_w - digit * cell) : cell;
     src->h = tex_h;
 }
 
 /* Widest scaled glyph — fixed column width so 0..9 align in three slots. */
+static int hud_digit_crisp_height(int tex_h, int digit_h)
+{
+    if (tex_h < 1 || digit_h < 1)
+        return digit_h;
+    if (digit_h <= tex_h)
+        return digit_h;
+
+    int whole = digit_h / tex_h;
+    if (whole < 1) whole = 1;
+    return whole * tex_h;
+}
+
+static int hud_digit_gl_blit(int kind, int digit, const SDL_Rect *dst)
+{
+    if (kind < 0 || kind >= DISPLAY_HUD_DIGIT_KIND_COUNT)
+        return 0;
+    if (digit < 0 || digit >= DISPLAY_HUD_DIGIT_COUNT)
+        return 0;
+    if (!g_hud_digit_array_ok[kind] && g_hud_digit_tex[kind])
+        display_hud_digit_upload_array_texture(kind);
+    if (!g_hud_digit_array_ok[kind] || !g_hud_digit_array_tex[kind])
+        return 0;
+
+    return display_gl_array_layer_blit(g_hud_digit_array_tex[kind], digit,
+                                       DISPLAY_HUD_DIGIT_COUNT,
+                                       0.0f, 0.0f, 1.0f, 1.0f, dst, 255);
+}
+
 static int hud_max_digit_scaled_width(int tex_w, int tex_h, int digit_h)
 {
     int mw = 0;
-    for (int d = 0; d <= 9; d++) {
+    for (int d = 0; d < DISPLAY_HUD_DIGIT_COUNT; d++) {
         SDL_Rect src;
         hud_digit_src_rect(tex_w, tex_h, d, &src);
         int dw = (src.w * digit_h + src.h / 2) / src.h;
@@ -3589,8 +3761,9 @@ static int hud_three_slot_width(int tex_w, int tex_h, int digit_h, int gap)
  * (health max 100, ammo count max 999).
  * x_left, y_top, digit_h, gap are in letterbox pixels (same space as hud_key_row_layout).
  */
-static void hud_draw_three_slot_value(SDL_Texture *tex, int tex_w, int tex_h, int digit_h,
-                                      int value, int max_value, int x_left, int y_top, int gap)
+static void hud_draw_three_slot_value(int kind, SDL_Texture *tex, int tex_w, int tex_h,
+                                      int digit_h, int value, int max_value,
+                                      int x_left, int y_top, int gap)
 {
     if (value < 0) value = 0;
     if (value > max_value) value = max_value;
@@ -3632,7 +3805,8 @@ static void hud_draw_three_slot_value(SDL_Texture *tex, int tex_w, int tex_h, in
         dst.w = px1i - px0i;
         if (dst.w < 1) dst.w = 1;
         dst.h = sh;
-        display_overlay_copy(tex, &src, &dst);
+        if (!hud_digit_gl_blit(kind, d, &dst))
+            display_overlay_copy(tex, &src, &dst);
     }
 }
 
@@ -3657,6 +3831,7 @@ static void display_fps_overlay(const GameState *state)
     if (margin < 2) margin = 2;
     int digit_h = ph / 32;
     if (digit_h < 11) digit_h = 11;
+    digit_h = hud_digit_crisp_height(tex_h, digit_h);
     int d_gap = digit_h / 16;
     if (d_gap < 1) d_gap = 1;
 
@@ -3694,7 +3869,8 @@ static void display_fps_overlay(const GameState *state)
         dst.w = px1i - px0i;
         if (dst.w < 1) dst.w = 1;
         dst.h = sh;
-        display_overlay_copy(tex, &src, &dst);
+        if (!hud_digit_gl_blit(1, d, &dst))
+            display_overlay_copy(tex, &src, &dst);
     }
 }
 
@@ -3821,7 +3997,14 @@ static void display_hud_stats_sdl_overlay(const GameState *state)
     int d_gap = kh / 16;
     if (d_gap < 1) d_gap = 1;
 
-    int digit_h = kh;
+    int digit_base_h = 0;
+    if (g_hud_digit_tex[0]) {
+        digit_base_h = g_hud_digit_tex_h[0];
+    } else if (g_hud_digit_tex[1]) {
+        digit_base_h = g_hud_digit_tex_h[1];
+    }
+
+    int digit_h = hud_digit_crisp_height(digit_base_h, kh);
     int health_w = 0, ammo_w = 0;
     if (g_hud_digit_tex[0])
         health_w = hud_three_slot_width(g_hud_digit_tex_w[0], g_hud_digit_tex_h[0], digit_h, d_gap);
@@ -3834,7 +4017,7 @@ static void display_hud_stats_sdl_overlay(const GameState *state)
         int stats_total = health_w + inner + ammo_w;
         int leftmost = ix_key0 - gap_stat - stats_total;
         if (leftmost >= margin) break;
-        digit_h = digit_h * 9 / 10;
+        digit_h = hud_digit_crisp_height(digit_base_h, digit_h * 9 / 10);
         if (digit_h < 6) break;
         health_w = g_hud_digit_tex[0] ? hud_three_slot_width(g_hud_digit_tex_w[0], g_hud_digit_tex_h[0], digit_h, d_gap) : 0;
         ammo_w = g_hud_digit_tex[1] ? hud_three_slot_width(g_hud_digit_tex_w[1], g_hud_digit_tex_h[1], digit_h, d_gap) : 0;
@@ -3845,14 +4028,14 @@ static void display_hud_stats_sdl_overlay(const GameState *state)
     if (g_hud_digit_tex[1] && ammo_w > 0) {
         int ammo_x = right - ammo_w;
         SDL_SetTextureAlphaMod(g_hud_digit_tex[1], 255);
-        hud_draw_three_slot_value(g_hud_digit_tex[1], g_hud_digit_tex_w[1], g_hud_digit_tex_h[1],
+        hud_draw_three_slot_value(1, g_hud_digit_tex[1], g_hud_digit_tex_w[1], g_hud_digit_tex_h[1],
                                   digit_h, ammo_count, (int)MAX_AMMO_RAW, ammo_x, iy, d_gap);
         right = ammo_x - gap_stat;
     }
     if (g_hud_digit_tex[0] && health_w > 0) {
         int health_x = right - health_w;
         SDL_SetTextureAlphaMod(g_hud_digit_tex[0], 255);
-        hud_draw_three_slot_value(g_hud_digit_tex[0], g_hud_digit_tex_w[0], g_hud_digit_tex_h[0],
+        hud_draw_three_slot_value(0, g_hud_digit_tex[0], g_hud_digit_tex_w[0], g_hud_digit_tex_h[0],
                                   digit_h, hp_pct, 100, health_x, iy, d_gap);
     }
 }
