@@ -473,27 +473,6 @@ static bool enemy_set_ctx_room_from_zone(GameState *state, MoveContext *ctx,
     return true;
 }
 
-static int16_t enemy_zone_word_from_index(const GameState *state, int zone_index)
-{
-    int zone_slots;
-    int32_t zone_off;
-    const uint8_t *room;
-
-    if (!state || !state->level.zone_adds || !state->level.data)
-        return -1;
-
-    zone_slots = level_zone_slot_count(&state->level);
-    if (zone_index < 0 || zone_index >= zone_slots)
-        return -1;
-
-    zone_off = (int32_t)be32(state->level.zone_adds + (uint32_t)zone_index * 4u);
-    if (zone_off < 0)
-        return -1;
-
-    room = state->level.data + zone_off;
-    return (int16_t)((room[0] << 8) | room[1]);
-}
-
 static int enemy_zone_index_from_room(const GameState *state, const uint8_t *room)
 {
     int zone;
@@ -544,21 +523,6 @@ static void enemy_sync_floor_y_from_zone(GameObject *obj, const GameState *state
     obj_sw(obj->raw + 4, (int16_t)((floor_h >> 7) - render_offset));
 }
 
-static bool enemy_zone_contains_point(const GameState *state, int zone_index,
-                                      int32_t x, int32_t z)
-{
-    int16_t zone_word;
-    int found_zone;
-
-    if (!state || zone_index < 0 ||
-        zone_index >= level_zone_slot_count(&state->level))
-        return false;
-
-    zone_word = enemy_zone_word_from_index(state, zone_index);
-    found_zone = level_find_zone_for_point(&state->level, x, z, zone_word);
-    return found_zone == zone_index;
-}
-
 static void enemy_commit_move_context(GameObject *obj, GameState *state,
                                       MoveContext *ctx)
 {
@@ -570,7 +534,6 @@ static void enemy_commit_move_context(GameObject *obj, GameState *state,
     int final_zone;
     int8_t final_in_top;
     bool cancelled_to_old;
-    bool forced_rollback = false;
 
     if (!obj || !state || !ctx)
         return;
@@ -583,25 +546,10 @@ static void enemy_commit_move_context(GameObject *obj, GameState *state,
     }
     cancelled_to_old = (ctx->newx == ctx->oldx && ctx->newz == ctx->oldz);
 
-    /* Amiga enemy scripts commit objZone from objroom after MoveObject/CheckTeleport.
-     * Do not recover by searching every zone for newx/newz here: that can bless a
-     * wall-slide/crowd-cancel position that was never reached through a legal exit. */
+    /* Amiga enemy scripts commit objZone from objroom after MoveObject/CheckTeleport
+     * and then store newx/newz; containment decisions belong inside ObjectMove.s. */
     final_zone = cancelled_to_old ? old_zone : ctx_zone;
     final_in_top = cancelled_to_old ? old_in_top : ctx->stood_in_top;
-
-    if (final_zone < 0 ||
-        !enemy_zone_contains_point(state, final_zone, ctx->newx, ctx->newz)) {
-        /* Safety rollback only: original scripts change direction from
-         * hitwall set by Collision/MoveObject, not from this C-side guard. */
-        ctx->newx = ctx->oldx;
-        ctx->newz = ctx->oldz;
-        final_zone = old_zone;
-        final_in_top = old_in_top;
-        forced_rollback = true;
-    }
-
-    if (forced_rollback)
-        enemy_motion_zero_slot(enemy_motion_slot_index(state, obj));
 
     if (final_zone >= 0 && final_zone < zone_slots) {
         if (!object_zone_use_upper(&state->level, final_zone, final_in_top))
