@@ -196,6 +196,14 @@ static AB3D_THREAD_LOCAL uint8_t g_sprite_col_texel_lut[256];
 /* Amiga BitMapObj path uses cmp.w #50,d1 ; ble objbehind.
  * Keep this near cutoff for billboards so close sprites don't over-scale. */
 #define SPRITE_NEAR_CLIP_Z 50
+/* Renderer buffer tags. 0 is intentionally empty/sky so water refraction can
+ * keep using it as the "sample from history" marker. */
+#define RENDERER_PIXEL_TAG_SKY    0u
+#define RENDERER_PIXEL_TAG_FLOOR  1u
+#define RENDERER_PIXEL_TAG_WALL   2u
+#define RENDERER_PIXEL_TAG_SPRITE 3u
+#define RENDERER_PIXEL_TAG_WATER  4u
+#define RENDERER_PIXEL_TAG_GUN    15u
 /* Reference Z used to project two-level zone split height to screen Y. */
 #define TWO_LEVEL_SPLIT_REF_Z 400
 
@@ -6637,6 +6645,8 @@ static void renderer_draw_sky_ceiling_span_ctx(RenderSliceContext *ctx,
     uint8_t *buf = renderer_active_buf();
     uint32_t *rgb = renderer_active_rgb();
     uint16_t *cwbuf = renderer_active_cw();
+    uint16_t *pick_zone = renderer_active_pick_zone();
+    uint8_t *pick_player = renderer_active_pick_player();
     if (!buf || !rgb || !cwbuf) return;
     if (y < 0 || y >= rs->height) return;
     if (y < (int)ctx->top_clip || y > (int)ctx->bot_clip) return;
@@ -6644,7 +6654,6 @@ static void renderer_draw_sky_ceiling_span_ctx(RenderSliceContext *ctx,
     int xl = (x_left < ctx->left_clip) ? ctx->left_clip : x_left;
     int xr = (x_right >= ctx->right_clip) ? ctx->right_clip - 1 : x_right;
     if (xl > xr) return;
-    renderer_pick_mark_row_span(ctx, y, xl, xr, RENDERER_PICK_ZONE_NONE);
 
 #if !RENDER_SKY
     {
@@ -6654,10 +6663,14 @@ static void renderer_draw_sky_ceiling_span_ctx(RenderSliceContext *ctx,
         size_t row = (size_t)y * (size_t)w;
         for (int x = xl; x <= xr; x++) {
             size_t p = row + (size_t)x;
-            buf[p] = 0;
-            if (g_renderer_rgb_raster_expand)
-                rgb[p] = sky_px;
-            renderer_cw_store_xy(cwbuf, x, y, w, rs->height, sky_cw);
+            if (buf[p] == RENDERER_PIXEL_TAG_SKY) {
+                if (pick_zone) pick_zone[p] = RENDERER_PICK_ZONE_NONE;
+                if (pick_player) pick_player[p] = 0;
+                buf[p] = RENDERER_PIXEL_TAG_SKY;
+                if (g_renderer_rgb_raster_expand)
+                    rgb[p] = sky_px;
+                renderer_cw_store_xy(cwbuf, x, y, w, rs->height, sky_cw);
+            }
         }
     }
 #else
@@ -6721,10 +6734,14 @@ static void renderer_draw_sky_ceiling_span_ctx(RenderSliceContext *ctx,
                     if (off + 2u > sky_lim) { sx_fp += sx_step_fp; continue; }
                     uint16_t cw12 = (uint16_t)((sky_px[off] << 8) | sky_px[off + 1u]);
                     size_t p = row + (size_t)x;
-                    buf[p] = 0;
-                    if (g_renderer_rgb_raster_expand)
-                        rgb[p] = amiga12_to_argb(cw12);
-                    renderer_cw_store_xy(cwbuf, x, y, w, h, cw12);
+                    if (buf[p] == RENDERER_PIXEL_TAG_SKY) {
+                        if (pick_zone) pick_zone[p] = RENDERER_PICK_ZONE_NONE;
+                        if (pick_player) pick_player[p] = 0;
+                        buf[p] = RENDERER_PIXEL_TAG_SKY;
+                        if (g_renderer_rgb_raster_expand)
+                            rgb[p] = amiga12_to_argb(cw12);
+                        renderer_cw_store_xy(cwbuf, x, y, w, h, cw12);
+                    }
                     sx_fp += sx_step_fp;
                 }
             } else {
@@ -6738,10 +6755,14 @@ static void renderer_draw_sky_ceiling_span_ctx(RenderSliceContext *ctx,
                     if (off + 2u > sky_lim) { sx_fp += sx_step_fp; continue; }
                     uint16_t cw12 = (uint16_t)((sky_px[off] << 8) | sky_px[off + 1u]);
                     size_t p = row + (size_t)x;
-                    buf[p] = 0;
-                    if (g_renderer_rgb_raster_expand)
-                        rgb[p] = amiga12_to_argb(cw12);
-                    renderer_cw_store_xy(cwbuf, x, y, w, h, cw12);
+                    if (buf[p] == RENDERER_PIXEL_TAG_SKY) {
+                        if (pick_zone) pick_zone[p] = RENDERER_PICK_ZONE_NONE;
+                        if (pick_player) pick_player[p] = 0;
+                        buf[p] = RENDERER_PIXEL_TAG_SKY;
+                        if (g_renderer_rgb_raster_expand)
+                            rgb[p] = amiga12_to_argb(cw12);
+                        renderer_cw_store_xy(cwbuf, x, y, w, h, cw12);
+                    }
                     sx_fp += sx_step_fp;
                 }
             }
@@ -6768,10 +6789,14 @@ static void renderer_draw_sky_ceiling_span_ctx(RenderSliceContext *ctx,
                 }
                 uint8_t idx = sky_px1[toff];
                 size_t p = row + (size_t)x;
-                buf[p] = 0;
-                if (g_renderer_rgb_raster_expand)
-                    rgb[p] = s_sky_argb[idx];
-                renderer_cw_store_xy(cwbuf, x, y, w, h, s_sky_cw[idx]);
+                if (buf[p] == RENDERER_PIXEL_TAG_SKY) {
+                    if (pick_zone) pick_zone[p] = RENDERER_PICK_ZONE_NONE;
+                    if (pick_player) pick_player[p] = 0;
+                    buf[p] = RENDERER_PIXEL_TAG_SKY;
+                    if (g_renderer_rgb_raster_expand)
+                        rgb[p] = s_sky_argb[idx];
+                    renderer_cw_store_xy(cwbuf, x, y, w, h, s_sky_cw[idx]);
+                }
                 sx_fp += sx_step_fp;
             }
         } else {
@@ -6788,10 +6813,14 @@ static void renderer_draw_sky_ceiling_span_ctx(RenderSliceContext *ctx,
                 int b = 30 + (shade * 200) / 255;
                 uint32_t px = RENDER_RGB_RASTER_PIXEL(((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b);
                 size_t p = row + (size_t)x;
-                buf[p] = 0;
-                if (g_renderer_rgb_raster_expand)
-                    rgb[p] = px;
-                renderer_cw_store_xy(cwbuf, x, y, w, h, argb_to_amiga12(px));
+                if (buf[p] == RENDERER_PIXEL_TAG_SKY) {
+                    if (pick_zone) pick_zone[p] = RENDERER_PICK_ZONE_NONE;
+                    if (pick_player) pick_player[p] = 0;
+                    buf[p] = RENDERER_PIXEL_TAG_SKY;
+                    if (g_renderer_rgb_raster_expand)
+                        rgb[p] = px;
+                    renderer_cw_store_xy(cwbuf, x, y, w, h, argb_to_amiga12(px));
+                }
                 sx_fp += sx_step_fp;
             }
         }
@@ -9029,10 +9058,11 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     (void)clip_top_world;
     (void)clip_bot_world;
     (void)sprite_type;
+    uint8_t *buf = renderer_active_buf();
     uint32_t *rgb = renderer_active_rgb();
     uint16_t *cw = renderer_active_cw();
     if (!ctx) return;
-    if (!rgb || !cw) return;
+    if (!buf || !rgb || !cw) return;
     if (z <= SPRITE_NEAR_CLIP_Z) return;
     if (!wad || !ptr_data) return;
     const int rw = g_renderer.width, rh = g_renderer.height;
@@ -9441,6 +9471,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                 const uint8_t texel = col_texel_lut[src_row];
                                 if (texel != 0) {
                                     if (profile_collect_stats) sprite_opaque_writes_total++;
+                                    buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                     rgb[pix] = spr_rgb[texel];
                                     cw[pix_cw] = spr_cw[texel];
                                     if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
@@ -9456,6 +9487,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                 const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                                 if (texel != 0) {
                                     if (profile_collect_stats) sprite_opaque_writes_total++;
+                                    buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                     rgb[pix] = spr_rgb[texel];
                                     cw[pix_cw] = spr_cw[texel];
                                     if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
@@ -9472,6 +9504,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                     const uint8_t texel = col_texel_lut[src_row];
                                     if (texel != 0) {
                                         if (profile_collect_stats) sprite_opaque_writes_total++;
+                                        buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                         rgb[pix] = spr_rgb[texel];
                                         cw[pix_cw] = spr_cw[texel];
                                         if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
@@ -9489,6 +9522,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                     const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                                     if (texel != 0) {
                                         if (profile_collect_stats) sprite_opaque_writes_total++;
+                                        buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                         rgb[pix] = spr_rgb[texel];
                                         cw[pix_cw] = spr_cw[texel];
                                         if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
@@ -9509,6 +9543,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                             const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                             if (texel != 0) {
                                 if (profile_collect_stats) sprite_opaque_writes_total++;
+                                buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                 if (spill_visualize) {
                                     rgb[pix] = spill_vis_rgb;
                                     cw[pix_cw] = spill_vis_cw;
@@ -9542,6 +9577,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                 const uint8_t texel = col_texel_lut[src_row];
                                 if (texel != 0) {
                                     if (profile_collect_stats) sprite_opaque_writes_total++;
+                                    buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                     cw[pix_cw] = spr_cw[texel];
                                     if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
                                 }
@@ -9556,6 +9592,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                 const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                                 if (texel != 0) {
                                     if (profile_collect_stats) sprite_opaque_writes_total++;
+                                    buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                     cw[pix_cw] = spr_cw[texel];
                                     if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
                                 }
@@ -9571,6 +9608,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                     const uint8_t texel = col_texel_lut[src_row];
                                     if (texel != 0) {
                                         if (profile_collect_stats) sprite_opaque_writes_total++;
+                                        buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                         cw[pix_cw] = spr_cw[texel];
                                         if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
                                     }
@@ -9587,6 +9625,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                     const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                                     if (texel != 0) {
                                         if (profile_collect_stats) sprite_opaque_writes_total++;
+                                        buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                         cw[pix_cw] = spr_cw[texel];
                                         if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
                                     }
@@ -9606,6 +9645,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                             const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                             if (texel != 0) {
                                 if (profile_collect_stats) sprite_opaque_writes_total++;
+                                buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                 cw[pix_cw] = spill_visualize ? spill_vis_cw : spr_cw[texel];
                                 if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
                             }
@@ -9853,7 +9893,7 @@ static void renderer_draw_gun_columns(GameState *state, int col_start, int col_e
                     if (idx == 0) continue;
 
                     uint16_t c12 = (uint16_t)((gun_pal[idx * 2u] << 8) | gun_pal[idx * 2u + 1]);
-                    buf[sy * rw + sx] = 15;
+                    buf[sy * rw + sx] = RENDERER_PIXEL_TAG_GUN;
                     if (g_renderer_rgb_raster_expand)
                         rgb[sy * rw + sx] = amiga12_to_argb(c12);
                     renderer_cw_store_xy(cw, sx, sy, rw, rh, c12);
