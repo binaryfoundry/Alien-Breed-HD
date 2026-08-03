@@ -196,14 +196,6 @@ static AB3D_THREAD_LOCAL uint8_t g_sprite_col_texel_lut[256];
 /* Amiga BitMapObj path uses cmp.w #50,d1 ; ble objbehind.
  * Keep this near cutoff for billboards so close sprites don't over-scale. */
 #define SPRITE_NEAR_CLIP_Z 50
-/* Renderer buffer tags. 0 is intentionally empty/sky so water refraction can
- * keep using it as the "sample from history" marker. */
-#define RENDERER_PIXEL_TAG_SKY    0u
-#define RENDERER_PIXEL_TAG_FLOOR  1u
-#define RENDERER_PIXEL_TAG_WALL   2u
-#define RENDERER_PIXEL_TAG_SPRITE 3u
-#define RENDERER_PIXEL_TAG_WATER  4u
-#define RENDERER_PIXEL_TAG_GUN    15u
 /* Reference Z used to project two-level zone split height to screen Y. */
 #define TWO_LEVEL_SPLIT_REF_Z 400
 
@@ -4652,6 +4644,27 @@ void renderer_clear(uint8_t color)
 #endif
 }
 
+static void renderer_prefill_current_color_from_previous_frame(void)
+{
+#if !RENDER_CLEAR
+    int w = g_renderer.width;
+    int h = g_renderer.height;
+    if (w <= 0 || h <= 0) return;
+
+    size_t pixel_count = (size_t)w * (size_t)h;
+    if (g_renderer.cw_buffer && g_renderer.cw_back_buffer) {
+        memcpy(g_renderer.cw_buffer,
+               g_renderer.cw_back_buffer,
+               pixel_count * sizeof(uint16_t));
+    }
+    if (g_renderer.rgb_buffer && g_renderer.rgb_back_buffer) {
+        memcpy(g_renderer.rgb_buffer,
+               g_renderer.rgb_back_buffer,
+               pixel_count * sizeof(uint32_t));
+    }
+#endif
+}
+
 /* Amiga Anims.s putinbackdrop: pan u0 = (ang & 8191) * 432 / 8192 into cylindrical sky map (432 px wrap). */
 #define SKY_PAN_WIDTH 432
 /* Standard backfile: 76 bytes per column = 38 x 16-bit Amiga color words (column-major). */
@@ -5786,16 +5799,6 @@ static inline void renderer_zone_trace_floor_stats_note_water_sample1(RendererZo
     stats->water_backbuf1_pixels++;
 }
 
-static inline int renderer_water_span_needs_back_buffer(const uint8_t *tags, int span_len)
-{
-    if (!tags || span_len <= 0) return 0;
-    for (int i = 0; i < span_len; i++) {
-        uint8_t tag = tags[i];
-        if (tag == 0 || tag == 4) return 1;
-    }
-    return 0;
-}
-
 static void renderer_zone_trace_floor_stats_accumulate_edges(RendererZoneTraceFloorStats *stats,
                                                              const RenderSliceContext *ctx,
                                                              const int16_t *left_edge,
@@ -6663,14 +6666,12 @@ static void renderer_draw_sky_ceiling_span_ctx(RenderSliceContext *ctx,
         size_t row = (size_t)y * (size_t)w;
         for (int x = xl; x <= xr; x++) {
             size_t p = row + (size_t)x;
-            if (buf[p] == RENDERER_PIXEL_TAG_SKY) {
-                if (pick_zone) pick_zone[p] = RENDERER_PICK_ZONE_NONE;
-                if (pick_player) pick_player[p] = 0;
-                buf[p] = RENDERER_PIXEL_TAG_SKY;
-                if (g_renderer_rgb_raster_expand)
-                    rgb[p] = sky_px;
-                renderer_cw_store_xy(cwbuf, x, y, w, rs->height, sky_cw);
-            }
+            if (pick_zone) pick_zone[p] = RENDERER_PICK_ZONE_NONE;
+            if (pick_player) pick_player[p] = 0;
+            buf[p] = 0;
+            if (g_renderer_rgb_raster_expand)
+                rgb[p] = sky_px;
+            renderer_cw_store_xy(cwbuf, x, y, w, rs->height, sky_cw);
         }
     }
 #else
@@ -6734,14 +6735,12 @@ static void renderer_draw_sky_ceiling_span_ctx(RenderSliceContext *ctx,
                     if (off + 2u > sky_lim) { sx_fp += sx_step_fp; continue; }
                     uint16_t cw12 = (uint16_t)((sky_px[off] << 8) | sky_px[off + 1u]);
                     size_t p = row + (size_t)x;
-                    if (buf[p] == RENDERER_PIXEL_TAG_SKY) {
-                        if (pick_zone) pick_zone[p] = RENDERER_PICK_ZONE_NONE;
-                        if (pick_player) pick_player[p] = 0;
-                        buf[p] = RENDERER_PIXEL_TAG_SKY;
-                        if (g_renderer_rgb_raster_expand)
-                            rgb[p] = amiga12_to_argb(cw12);
-                        renderer_cw_store_xy(cwbuf, x, y, w, h, cw12);
-                    }
+                    if (pick_zone) pick_zone[p] = RENDERER_PICK_ZONE_NONE;
+                    if (pick_player) pick_player[p] = 0;
+                    buf[p] = 0;
+                    if (g_renderer_rgb_raster_expand)
+                        rgb[p] = amiga12_to_argb(cw12);
+                    renderer_cw_store_xy(cwbuf, x, y, w, h, cw12);
                     sx_fp += sx_step_fp;
                 }
             } else {
@@ -6755,14 +6754,12 @@ static void renderer_draw_sky_ceiling_span_ctx(RenderSliceContext *ctx,
                     if (off + 2u > sky_lim) { sx_fp += sx_step_fp; continue; }
                     uint16_t cw12 = (uint16_t)((sky_px[off] << 8) | sky_px[off + 1u]);
                     size_t p = row + (size_t)x;
-                    if (buf[p] == RENDERER_PIXEL_TAG_SKY) {
-                        if (pick_zone) pick_zone[p] = RENDERER_PICK_ZONE_NONE;
-                        if (pick_player) pick_player[p] = 0;
-                        buf[p] = RENDERER_PIXEL_TAG_SKY;
-                        if (g_renderer_rgb_raster_expand)
-                            rgb[p] = amiga12_to_argb(cw12);
-                        renderer_cw_store_xy(cwbuf, x, y, w, h, cw12);
-                    }
+                    if (pick_zone) pick_zone[p] = RENDERER_PICK_ZONE_NONE;
+                    if (pick_player) pick_player[p] = 0;
+                    buf[p] = 0;
+                    if (g_renderer_rgb_raster_expand)
+                        rgb[p] = amiga12_to_argb(cw12);
+                    renderer_cw_store_xy(cwbuf, x, y, w, h, cw12);
                     sx_fp += sx_step_fp;
                 }
             }
@@ -6789,14 +6786,12 @@ static void renderer_draw_sky_ceiling_span_ctx(RenderSliceContext *ctx,
                 }
                 uint8_t idx = sky_px1[toff];
                 size_t p = row + (size_t)x;
-                if (buf[p] == RENDERER_PIXEL_TAG_SKY) {
-                    if (pick_zone) pick_zone[p] = RENDERER_PICK_ZONE_NONE;
-                    if (pick_player) pick_player[p] = 0;
-                    buf[p] = RENDERER_PIXEL_TAG_SKY;
-                    if (g_renderer_rgb_raster_expand)
-                        rgb[p] = s_sky_argb[idx];
-                    renderer_cw_store_xy(cwbuf, x, y, w, h, s_sky_cw[idx]);
-                }
+                if (pick_zone) pick_zone[p] = RENDERER_PICK_ZONE_NONE;
+                if (pick_player) pick_player[p] = 0;
+                buf[p] = 0;
+                if (g_renderer_rgb_raster_expand)
+                    rgb[p] = s_sky_argb[idx];
+                renderer_cw_store_xy(cwbuf, x, y, w, h, s_sky_cw[idx]);
                 sx_fp += sx_step_fp;
             }
         } else {
@@ -6813,14 +6808,12 @@ static void renderer_draw_sky_ceiling_span_ctx(RenderSliceContext *ctx,
                 int b = 30 + (shade * 200) / 255;
                 uint32_t px = RENDER_RGB_RASTER_PIXEL(((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b);
                 size_t p = row + (size_t)x;
-                if (buf[p] == RENDERER_PIXEL_TAG_SKY) {
-                    if (pick_zone) pick_zone[p] = RENDERER_PICK_ZONE_NONE;
-                    if (pick_player) pick_player[p] = 0;
-                    buf[p] = RENDERER_PIXEL_TAG_SKY;
-                    if (g_renderer_rgb_raster_expand)
-                        rgb[p] = px;
-                    renderer_cw_store_xy(cwbuf, x, y, w, h, argb_to_amiga12(px));
-                }
+                if (pick_zone) pick_zone[p] = RENDERER_PICK_ZONE_NONE;
+                if (pick_player) pick_player[p] = 0;
+                buf[p] = 0;
+                if (g_renderer_rgb_raster_expand)
+                    rgb[p] = px;
+                renderer_cw_store_xy(cwbuf, x, y, w, h, argb_to_amiga12(px));
                 sx_fp += sx_step_fp;
             }
         }
@@ -7038,7 +7031,6 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
     size_t water_refr_cw_base1 = 0;
     int water_refr_frac = 0;
     int water_has_next_refr = 0;
-    const int water_has_back_buffers = (rs->rgb_back_buffer && rs->cw_back_buffer);
     if (is_water) {
         int32_t refr_y_fp = ((int32_t)y << 8) + water_refr_y_off_fp;
         int refr_y = (int)(refr_y_fp >> 8);
@@ -7272,12 +7264,8 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
                 const uint8_t *water_file = water_phase_lut ? NULL : (g_water_file + (size_t)g_water_src_off);
                 const uint8_t *water_brighten = g_water_brighten + (size_t)dist_off;
                 const int water_brighten_row_base = (int)(dist_off >> 9);
-                const int sample0_needs_back_buffer = water_has_back_buffers
-                    ? renderer_water_span_needs_back_buffer(buf + bg_i0, span_len)
-                    : 0;
-                const int sample1_needs_back_buffer = (water_has_back_buffers && water_has_next_refr)
-                    ? renderer_water_span_needs_back_buffer(buf + bg_i1, span_len)
-                    : 0;
+                const int sample0_needs_back_buffer = 0;
+                const int sample1_needs_back_buffer = 0;
                 renderer_zone_trace_floor_stats_note_water_span(water_trace_stats,
                                                                 (uint64_t)span_len,
                                                                 1,
@@ -7350,10 +7338,7 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
                                 : water_file[(size_t)water_d5 << 2];
 
                             uint16_t bg_cw0 = cwbuf[bg_cw_i0];
-                            int sample0_back_buffer = ((buf[bg_i0] == 0 || buf[bg_i0] == 4) && water_has_back_buffers);
-                            if (sample0_back_buffer) {
-                                bg_cw0 = rs->cw_back_buffer[bg_cw_i0];
-                            }
+                            int sample0_back_buffer = 0;
                             renderer_zone_trace_floor_stats_note_water_sample0(water_trace_stats, sample0_back_buffer);
 
                             uint16_t out_cw;
@@ -7452,16 +7437,10 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
                                 : water_file[(size_t)water_d5 << 2];
 
                             uint16_t bg_cw0 = cwbuf[bg_cw_i0];
-                            int sample0_back_buffer = ((buf[bg_i0] == 0 || buf[bg_i0] == 4) && water_has_back_buffers);
-                            if (sample0_back_buffer) {
-                                bg_cw0 = rs->cw_back_buffer[bg_cw_i0];
-                            }
+                            int sample0_back_buffer = 0;
                             renderer_zone_trace_floor_stats_note_water_sample0(water_trace_stats, sample0_back_buffer);
                             uint16_t bg_cw1 = cwbuf[bg_cw_i1];
-                            int sample1_back_buffer = ((buf[bg_i1] == 0 || buf[bg_i1] == 4) && water_has_back_buffers);
-                            if (sample1_back_buffer) {
-                                bg_cw1 = rs->cw_back_buffer[bg_cw_i1];
-                            }
+                            int sample1_back_buffer = 0;
                             renderer_zone_trace_floor_stats_note_water_sample1(water_trace_stats, sample1_back_buffer);
 
                             uint16_t out_cw0;
@@ -7530,17 +7509,6 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
             uint32_t bg0 = 0;
             if (expand)
                 bg0 = rgb[bg_i0];
-            if ((buf[bg_i0] == 0 || buf[bg_i0] == 4) && water_has_back_buffers) {
-                /* AB3DI texturedwater samples from display memory while floor lines are streamed.
-                 * When refraction points at rows not written yet this frame, those pixels still
-                 * contain prior-frame values; mirror that by sampling back-buffer content.
-                 * Also avoid water-over-water feedback between adjacent zones in this port's
-                 * per-zone streaming path by treating existing water-tagged pixels the same way. */
-                bg_cw0 = rs->cw_back_buffer[bg_cw_i0];
-                if (expand)
-                    bg0 = rs->rgb_back_buffer[bg_i0];
-                renderer_zone_trace_floor_stats_note_water_sample0(water_trace_stats, 1);
-            }
             uint8_t bg_sample0 = (uint8_t)(bg_cw0 & 0xFFu);
 
             uint32_t bg1 = bg0;
@@ -7550,12 +7518,6 @@ static void renderer_draw_floor_span_ctx(RenderSliceContext *ctx,
                 bg_cw1 = cwbuf[bg_cw_i1];
                 if (expand)
                     bg1 = rgb[bg_i1];
-                if ((buf[bg_i1] == 0 || buf[bg_i1] == 4) && water_has_back_buffers) {
-                    bg_cw1 = rs->cw_back_buffer[bg_cw_i1];
-                    if (expand)
-                        bg1 = rs->rgb_back_buffer[bg_i1];
-                    renderer_zone_trace_floor_stats_note_water_sample1(water_trace_stats, 1);
-                }
                 bg_sample1 = (uint8_t)(bg_cw1 & 0xFFu);
             }
 
@@ -9058,11 +9020,10 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     (void)clip_top_world;
     (void)clip_bot_world;
     (void)sprite_type;
-    uint8_t *buf = renderer_active_buf();
     uint32_t *rgb = renderer_active_rgb();
     uint16_t *cw = renderer_active_cw();
     if (!ctx) return;
-    if (!buf || !rgb || !cw) return;
+    if (!rgb || !cw) return;
     if (z <= SPRITE_NEAR_CLIP_Z) return;
     if (!wad || !ptr_data) return;
     const int rw = g_renderer.width, rh = g_renderer.height;
@@ -9471,7 +9432,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                 const uint8_t texel = col_texel_lut[src_row];
                                 if (texel != 0) {
                                     if (profile_collect_stats) sprite_opaque_writes_total++;
-                                    buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                     rgb[pix] = spr_rgb[texel];
                                     cw[pix_cw] = spr_cw[texel];
                                     if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
@@ -9487,7 +9447,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                 const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                                 if (texel != 0) {
                                     if (profile_collect_stats) sprite_opaque_writes_total++;
-                                    buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                     rgb[pix] = spr_rgb[texel];
                                     cw[pix_cw] = spr_cw[texel];
                                     if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
@@ -9504,7 +9463,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                     const uint8_t texel = col_texel_lut[src_row];
                                     if (texel != 0) {
                                         if (profile_collect_stats) sprite_opaque_writes_total++;
-                                        buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                         rgb[pix] = spr_rgb[texel];
                                         cw[pix_cw] = spr_cw[texel];
                                         if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
@@ -9522,7 +9480,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                     const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                                     if (texel != 0) {
                                         if (profile_collect_stats) sprite_opaque_writes_total++;
-                                        buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                         rgb[pix] = spr_rgb[texel];
                                         cw[pix_cw] = spr_cw[texel];
                                         if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
@@ -9543,7 +9500,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                             const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                             if (texel != 0) {
                                 if (profile_collect_stats) sprite_opaque_writes_total++;
-                                buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                 if (spill_visualize) {
                                     rgb[pix] = spill_vis_rgb;
                                     cw[pix_cw] = spill_vis_cw;
@@ -9577,7 +9533,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                 const uint8_t texel = col_texel_lut[src_row];
                                 if (texel != 0) {
                                     if (profile_collect_stats) sprite_opaque_writes_total++;
-                                    buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                     cw[pix_cw] = spr_cw[texel];
                                     if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
                                 }
@@ -9592,7 +9547,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                 const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                                 if (texel != 0) {
                                     if (profile_collect_stats) sprite_opaque_writes_total++;
-                                    buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                     cw[pix_cw] = spr_cw[texel];
                                     if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
                                 }
@@ -9608,7 +9562,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                     const uint8_t texel = col_texel_lut[src_row];
                                     if (texel != 0) {
                                         if (profile_collect_stats) sprite_opaque_writes_total++;
-                                        buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                         cw[pix_cw] = spr_cw[texel];
                                         if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
                                     }
@@ -9625,7 +9578,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                                     const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                                     if (texel != 0) {
                                         if (profile_collect_stats) sprite_opaque_writes_total++;
-                                        buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                         cw[pix_cw] = spr_cw[texel];
                                         if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
                                     }
@@ -9645,7 +9597,6 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                             const uint8_t texel = (uint8_t)((w >> texel_shift) & 0x1F);
                             if (texel != 0) {
                                 if (profile_collect_stats) sprite_opaque_writes_total++;
-                                buf[pix] = RENDERER_PIXEL_TAG_SPRITE;
                                 cw[pix_cw] = spill_visualize ? spill_vis_cw : spr_cw[texel];
                                 if (mark_sprite_pick_zone_none) pick_zone[pix] = RENDERER_PICK_ZONE_NONE;
                             }
@@ -9893,7 +9844,7 @@ static void renderer_draw_gun_columns(GameState *state, int col_start, int col_e
                     if (idx == 0) continue;
 
                     uint16_t c12 = (uint16_t)((gun_pal[idx * 2u] << 8) | gun_pal[idx * 2u + 1]);
-                    buf[sy * rw + sx] = RENDERER_PIXEL_TAG_GUN;
+                    buf[sy * rw + sx] = 15;
                     if (g_renderer_rgb_raster_expand)
                         rgb[sy * rw + sx] = amiga12_to_argb(c12);
                     renderer_cw_store_xy(cw, sx, sy, rw, rh, c12);
@@ -13992,6 +13943,32 @@ static void renderer_draw_zone_backdrop_sky_ctx(RenderSliceContext *ctx,
     }
 }
 
+static void renderer_draw_zone_backdrop_section_ctx(RenderSliceContext *ctx,
+                                                    GameState *state,
+                                                    int16_t zone_id,
+                                                    int use_upper)
+{
+    if (!ctx || !state) return;
+
+    RendererState *r = &g_renderer;
+    LevelState *level = &state->level;
+    if (!level->data || !level->zone_adds || !level->zone_graph_adds) return;
+    {
+        int zone_slots = level_zone_slot_count(level);
+        if (zone_id < 0 || zone_id >= zone_slots) return;
+        if (level->num_zone_graph_entries > 0 && zone_id >= level->num_zone_graph_entries)
+            return;
+    }
+
+    int32_t zone_off = rd32(level->zone_adds + zone_id * 4);
+    const uint8_t *zone_data = level->data + zone_off;
+    int32_t zone_roof = use_upper
+        ? rd32(zone_data + ZONE_OFF_UPPER_ROOF)
+        : rd32(zone_data + 6);
+
+    renderer_draw_zone_backdrop_sky_ctx(ctx, zone_id, use_upper, zone_roof, r->yoff);
+}
+
 static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, int16_t zone_id, int use_upper)
 {
     if (!ctx || !state) return;
@@ -14108,8 +14085,6 @@ static void renderer_draw_zone_ctx(RenderSliceContext *ctx, GameState *state, in
     int16_t zone_bright = 0;
     if (zone_id >= 0 && zone_id < level_zone_slot_count(level))
         zone_bright = level_get_zone_brightness(level, zone_id, use_upper ? 1 : 0);
-
-    renderer_draw_zone_backdrop_sky_ctx(ctx, zone_id, use_upper, zone_roof, y_off);
 
     /* Amiga: draw walls and arcs in stream order (no deferral). */
 
@@ -15023,6 +14998,7 @@ void renderer_draw_zone(GameState *state, int16_t zone_id, int use_upper)
                               g_renderer.top_clip, g_renderer.bot_clip);
     ctx.wall_top_clip = g_renderer.wall_top_clip;
     ctx.wall_bot_clip = g_renderer.wall_bot_clip;
+    renderer_draw_zone_backdrop_section_ctx(&ctx, state, zone_id, use_upper);
     renderer_draw_zone_ctx(&ctx, state, zone_id, use_upper);
 }
 
@@ -15412,6 +15388,58 @@ static void renderer_draw_world_slice(GameState *state,
 
         render_slice_context_reset(&frame_ctx, (int16_t)left_clip_px, (int16_t)right_clip_px,
                                    strip_top, strip_bot);
+        frame_ctx.left_clip = (int16_t)left_clip_px;
+        frame_ctx.right_clip = (int16_t)right_clip_px;
+
+        {
+            const RendererZoneSectionClip *lower_clip = &zone_prepass->lower_clip[i];
+            const RendererZoneSectionClip *upper_clip = &zone_prepass->upper_clip[i];
+            int zone_upper_first = zone_prepass->draw_upper_first[i] ? 1 : 0;
+
+            if (zone_upper_first) {
+                if (upper_clip->valid) {
+                    renderer_apply_zone_section_clip(&frame_ctx, upper_clip);
+                    renderer_draw_zone_backdrop_section_ctx(&frame_ctx, state, zone_id, 1);
+                }
+                if (lower_clip->valid) {
+                    renderer_apply_zone_section_clip(&frame_ctx, lower_clip);
+                    renderer_draw_zone_backdrop_section_ctx(&frame_ctx, state, zone_id, 0);
+                }
+            } else {
+                if (lower_clip->valid) {
+                    renderer_apply_zone_section_clip(&frame_ctx, lower_clip);
+                    renderer_draw_zone_backdrop_section_ctx(&frame_ctx, state, zone_id, 0);
+                }
+                if (upper_clip->valid) {
+                    renderer_apply_zone_section_clip(&frame_ctx, upper_clip);
+                    renderer_draw_zone_backdrop_section_ctx(&frame_ctx, state, zone_id, 1);
+                }
+            }
+        }
+    }
+
+    for (int i = zone_count - 1; i >= 0; i--) {
+        int16_t zone_id = zone_prepass->zone_ids[i];
+        if (zone_id < 0 || !zone_prepass->valid[i]) continue;
+        {
+            int zs = level_zone_slot_count(&state->level);
+            if (zone_id >= zs) continue;
+            if (state->level.num_zone_graph_entries > 0 && zone_id >= state->level.num_zone_graph_entries)
+                continue;
+        }
+
+        int left_clip_px = (int)zone_prepass->left_px[i];
+        int right_clip_px = (int)zone_prepass->right_px[i];
+        if (left_clip_px < 0) left_clip_px = 0;
+        if (right_clip_px > w) right_clip_px = w;
+        if (left_clip_px < cs) left_clip_px = cs;
+        if (right_clip_px > ce) right_clip_px = ce;
+        if (left_clip_px >= right_clip_px) {
+            continue;
+        }
+
+        render_slice_context_reset(&frame_ctx, (int16_t)left_clip_px, (int16_t)right_clip_px,
+                                   strip_top, strip_bot);
 
         frame_ctx.left_clip = (int16_t)left_clip_px;
         frame_ctx.right_clip = (int16_t)right_clip_px;
@@ -15764,6 +15792,7 @@ void renderer_draw_display(GameState *state)
     if (prof_on) t_after_setup = SDL_GetPerformanceCounter();
 
     automap_stage_reset_frame();
+    renderer_prefill_current_color_from_previous_frame();
 
     int8_t fill_screen_water = 0;
     int used_threaded_world = 0;
