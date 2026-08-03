@@ -1992,6 +1992,19 @@ static int display_text_scaled_px(int px, int scale_q)
     return (scaled > 0) ? scaled : 1;
 }
 
+static int display_text_crisp_scale_q(int scale_q)
+{
+    if (scale_q <= DISPLAY_ASCII_SCALE_ONE)
+        return scale_q;
+
+    /* Fractional nearest-neighbor upscales make source pixels land at uneven
+     * widths. Keep magnification to whole numbers, while sub-1x scales still
+     * use mipmapped minification. */
+    int whole = scale_q / DISPLAY_ASCII_SCALE_ONE;
+    if (whole < 1) whole = 1;
+    return whole * DISPLAY_ASCII_SCALE_ONE;
+}
+
 static int display_text_span_width_px_q(int len, int scale_q)
 {
     if (len < 1 || scale_q < 1) return 0;
@@ -2168,6 +2181,8 @@ static int display_text_layout_in_rect(SDL_Rect r, DisplayTextRun *runs,
             break;
         scale_q--;
     }
+
+    scale_q = display_text_crisp_scale_q(scale_q);
 
     int line_h = display_text_scaled_px(DISPLAY_ASCII_LINE_ADVANCE, scale_q);
     int draw_h = display_text_scaled_px(DISPLAY_ASCII_DRAW_H, scale_q);
