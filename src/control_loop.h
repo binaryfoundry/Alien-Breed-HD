@@ -58,9 +58,6 @@ void play_game(GameState *state);
 /* PlayTheGame - level gameplay (AB3DI.s: PlayTheGame) */
 void play_the_game(GameState *state);
 
-/* Menu */
-int  read_main_menu(GameState *state);
-
 /* Password system (ControlLoop.s CalcPassword, PassLineToGame, GetStats) */
 void calc_password(GameState *state);
 int  pass_line_to_game(GameState *state, const char *password);

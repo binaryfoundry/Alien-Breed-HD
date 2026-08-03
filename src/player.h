@@ -8,10 +8,11 @@
  *   - Mouse (PLR1_mouse_control)
  *   - Mouse+KBD (PLR1_mousekbd_control)
  *   - Keyboard only (PLR1_keyboard_control)
- *   - Joystick (PLR1_JoyStick_control)
+ *   - Joystick (PLR1_JoyStick_control; mapped through the SDL gamepad input path)
  *   - Follow path (PLR1_follow_path) - debug/demo
  *
- * All are stubbed for now, but the structure mirrors the original dispatch.
+ * The port keeps this dispatch shape while routing implemented controls through
+ * player.c and the SDL input layer.
  */
 
 #ifndef PLAYER_H

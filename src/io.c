@@ -1,4 +1,4 @@
-#/*
+/*
  * Alien Breed 3D I - PC Port
  * io.c - File I/O + level loading helpers
  *
@@ -2114,8 +2114,15 @@ void io_load_vec_objects(void)
     }
 }
 
-void io_load_sfx(void)     { printf("[IO] load_sfx (stub)\n"); }
-void io_load_panel(void)   { printf("[IO] load_panel (stub)\n"); }
+void io_load_sfx(void)
+{
+    /* audio_init() owns the modern SFX bank load; keep the original setup call site. */
+}
+
+void io_load_panel(void)
+{
+    /* HUD/panel resources are owned by the display layer. */
+}
 
 void io_load_prefs(char *prefs_buf, int buf_size)
 {

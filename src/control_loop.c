@@ -37,7 +37,6 @@
 #include <string.h>
 #include "logging.h"
 #include <SDL.h>
-#include "settings.h"
 #define printf ab3d_log_printf
 
 #define LEVEL_TEXT_FADE_STEPS_NATIVE 8
@@ -258,22 +257,6 @@ int pass_line_to_game(GameState *state, const char *password)
     printf("[PASSWORD] Decoded: energy=%d level=%d\n",
            state->plr1.energy, state->max_level);
     return 0;
-}
-
-/*
- * read_main_menu - Wait for menu selection
- *
- * Original (ControlLoop.s ReadMainMenu):
- *   Draws option screen, loops on CheckMenu until selection.
- *   Returns option number or special codes ($ff=ESC, $fe=TAB).
- *
- * Stubbed: immediately returns "play game" (option 1).
- */
-int read_main_menu(GameState *state)
-{
-    printf("[MENU] Main menu (stub - auto-selecting 'Play Game')\n");
-    (void)state;
-    return 1; /* play game selected */
 }
 
 int play_the_game_should_show_level_text(const GameState *state)
@@ -500,7 +483,7 @@ void play_the_game_prepare_level(GameState *state, bool *copper_screen_ready)
          *   ObjectPoints, PLR1_Obj, PLR2_Obj
          * And assigns clip data to zone graph lists.
          */
-    /* Parse when level was loaded from file (raw data): zone_adds/points are only set by parse or stub. */
+    /* Parse raw level data only once; level_parse resolves zone_adds/points. */
     if (state->level.data && state->level.graphics && !state->level.zone_adds) {
         level_parse(&state->level);
 

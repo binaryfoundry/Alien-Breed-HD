@@ -90,10 +90,6 @@
  * player feel sluggish and can skip/tunnel through collision edges. */
 #define GAME_TICK_VBLANKS 1
 
-/* Number of frames to run in stub mode before auto-exiting */
-/* Max frames before auto-exit (0 = disabled, relies on ESC key) */
-#define STUB_MAX_FRAMES 0
-
 static int g_zone_log_initialized = 0;
 static int g_zone_log_env_initialized = 0;
 static int g_zone_log_enabled = 0;
@@ -1334,12 +1330,7 @@ void game_loop_tick(GameState *state, GameLoopCtx *ctx)
             /* ---- Phase 10: Zone brightness animation (bright_anim_values updated; rendering reads from zone data) ---- */
             bright_anim_handler(state);
 
-            /* ---- Phase 11: Visibility checks (multiplayer) ---- */
-            if (state->mode != MODE_SINGLE) {
-                if (state->level.zone_adds && state->level.data) {
-                    /* CanItBeSeen stub */
-                }
-            }
+            /* ---- Phase 11: Original multiplayer CanItBeSeen path is absent in this single-view runtime. ---- */
 
             /* ---- Phase 12: Fire holddown tracking ---- */
             {
@@ -1559,13 +1550,6 @@ void game_loop_tick(GameState *state, GameLoopCtx *ctx)
          * ================================================================ */
         ctx->frame_count++;
 
-        /* Auto-exit (only if STUB_MAX_FRAMES > 0) */
-#if STUB_MAX_FRAMES > 0
-        if (ctx->frame_count >= STUB_MAX_FRAMES) {
-            printf("[LOOP] Auto-exit after %d frames\n", STUB_MAX_FRAMES);
-            state->running = false;
-        }
-#endif
 }
 
 /*

@@ -1,4 +1,4 @@
-#/*
+/*
  * Alien Breed 3D I - PC Port
  * audio.c - SDL2 sound effects/music backend
  *
