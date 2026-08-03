@@ -4170,6 +4170,63 @@ static int16_t object_shot_explosive_force(const GameState *state,
     return force;
 }
 
+static void object_extinguish_flame_shot(GameObject *obj)
+{
+    if (!obj) return;
+
+    OBJ_SET_ZONE(obj, -1);
+    SHOT_STATUS(*obj) = 0;
+    SHOT_ANIM(*obj) = 0;
+    SHOT_SET_ANIM_ACCUM(*obj, 0);
+    SHOT_SET_LIFE(*obj, 0);
+}
+
+static bool object_flamethrower_flame_is_extinguishable(const GameState *state,
+                                                        const GameObject *obj,
+                                                        int8_t shot_size,
+                                                        int16_t flags)
+{
+    if (!state || !obj || shot_size != AB3D_GUN_FLAMETHROWER)
+        return false;
+
+    return (flags & SHOT_FLAG_VISUAL_ONLY) ||
+           object_is_player_shot_slot(state, obj);
+}
+
+static bool object_flame_shot_is_underwater(const GameState *state,
+                                            const GameObject *obj,
+                                            int32_t accypos)
+{
+    int zone_idx;
+    int32_t zone_off;
+    const uint8_t *zd;
+    int use_upper;
+    int32_t roof_h;
+    int32_t floor_h;
+    int32_t water_h;
+
+    if (!state || !obj || !state->level.zone_adds || !state->level.data)
+        return false;
+
+    zone_idx = object_resolve_zone_index(&state->level, OBJ_ZONE(obj));
+    if (zone_idx < 0)
+        return false;
+
+    zone_off = (int32_t)be32(state->level.zone_adds +
+                             (uint32_t)zone_idx * 4u);
+    if (zone_off < 0)
+        return false;
+
+    zd = state->level.data + zone_off;
+    use_upper = object_zone_use_upper(&state->level, zone_idx,
+                                      obj->obj.in_top);
+    roof_h = be32(zd + (use_upper ? ZONE_OFF_UPPER_ROOF : ZONE_OFF_ROOF));
+    floor_h = be32(zd + (use_upper ? ZONE_OFF_UPPER_FLOOR : ZONE_OFF_FLOOR));
+    water_h = be32(zd + ZONE_OFF_WATER);
+
+    return water_h > roof_h && water_h < floor_h && accypos >= water_h;
+}
+
 void object_handle_bullet(GameObject *obj, GameState *state)
 {
     int32_t xvel = SHOT_XVEL(*obj);
@@ -4184,6 +4241,15 @@ void object_handle_bullet(GameObject *obj, GameState *state)
     int anim_ticks = (int)state->temp_frames;
     if (anim_ticks < 1) anim_ticks = 1;
     bool    timed_out = false;
+    bool    extinguishable_flame =
+        object_flamethrower_flame_is_extinguishable(state, obj, shot_size,
+                                                    flags);
+
+    if (extinguishable_flame &&
+        object_flame_shot_is_underwater(state, obj, SHOT_ACCYPOS(*obj))) {
+        object_extinguish_flame_shot(obj);
+        return;
+    }
 
     /* Popping path (Amiga ItsABullet shotstatus!=0): advance pop sequence only. */
     if (shot_status != 0) {
@@ -4323,6 +4389,10 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         obj_sl(bullet_pts + 4, bz_fp);
         SHOT_SET_ACCYPOS(*obj, accypos);
         obj_sw(obj->raw + 4, (int16_t)(accypos >> 7));
+        if (extinguishable_flame &&
+            object_flame_shot_is_underwater(state, obj, accypos)) {
+            object_extinguish_flame_shot(obj);
+        }
         return;
     }
 
@@ -4506,6 +4576,12 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         }
         if (new_zone >= 0 && new_zone < zone_slots)
             OBJ_SET_ZONE(obj, (int16_t)new_zone);
+    }
+
+    if (extinguishable_flame &&
+        object_flame_shot_is_underwater(state, obj, accypos)) {
+        object_extinguish_flame_shot(obj);
+        return;
     }
 
     /* ---- Object-to-object hit detection (Anims.s: Check if hit a nasty) ---- */
