@@ -3444,6 +3444,28 @@ static SDL_Texture *display_key_hud_texture_for_frame(int frame_idx)
         return NULL;
     }
     SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+    SDL_SetTextureScaleMode(t, SDL_ScaleModeNearest);
+    if (g_gl_unpack_ok && g_gl_hud_ok) {
+        if (!g_gl_generate_mipmap || !g_gl_tex_parameteri)
+            display_load_gl_mipmap_procs();
+        if (g_gl_generate_mipmap && g_gl_tex_parameteri) {
+            float tw = 0.0f, th = 0.0f;
+            if (SDL_GL_BindTexture(t, &tw, &th) == 0) {
+                g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_MIN_FILTER,
+                                    (GLint)DGL_LINEAR_MIPMAP_LINEAR);
+                g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_MAG_FILTER,
+                                    (GLint)GL_NEAREST);
+                g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_WRAP_S,
+                                    (GLint)DGL_CLAMP_TO_EDGE);
+                g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_WRAP_T,
+                                    (GLint)DGL_CLAMP_TO_EDGE);
+                g_gl_generate_mipmap(DGL_TEXTURE_2D);
+                SDL_GL_UnbindTexture(t);
+            }
+        }
+    }
+#endif
     g_key_hud_tex[frame_idx] = t;
     return t;
 }
@@ -3646,6 +3668,11 @@ static void hud_key_row_layout(int lay_w, int lay_h, int *margin, int *kh, int *
     if (m < 2) m = 2;
     int k = lay_h / 32;
     if (k < 11) k = 11;
+    if (k > DISPLAY_HUD_DIGIT_CELL_H) {
+        int whole = k / DISPLAY_HUD_DIGIT_CELL_H;
+        if (whole < 1) whole = 1;
+        k = whole * DISPLAY_HUD_DIGIT_CELL_H;
+    }
     int g = k / 12;
     if (g < 2) g = 2;
     int gw = 4 * k + 3 * g;
