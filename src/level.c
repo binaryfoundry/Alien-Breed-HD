@@ -1253,6 +1253,39 @@ int level_find_zone_for_point(const LevelState *level, int32_t x, int32_t z, int
 }
 
 /* Floor line: 16 bytes; word at offset 8 = connect. */
+static int level_zone_connect_value_for_slot(const LevelState *level, int zone_slot)
+{
+    if (!level || !level->zone_adds || !level->data)
+        return -1;
+
+    int zone_slots = level_zone_slot_count(level);
+    if (zone_slot < 0 || zone_slot >= zone_slots)
+        return -1;
+
+    int32_t zoff = read_long(level->zone_adds + (size_t)zone_slot * 4u);
+    size_t data_len = level->data_byte_count;
+    if (zoff < 0 || (data_len != 0 && (size_t)zoff + 2u > data_len))
+        return -1;
+
+    int16_t zone_id = read_word(level->data + zoff);
+    if (zone_id >= 0 && level_connect_to_zone_index(level, zone_id) == zone_slot)
+        return (int)zone_id;
+
+    return zone_slot;
+}
+
+static int level_expected_connect_for_exit_zone(const LevelState *level, int listing_zone, int z1, int z2)
+{
+    int target_zone = -1;
+
+    if (listing_zone == z1)
+        target_zone = z2;
+    else if (listing_zone == z2)
+        target_zone = z1;
+
+    return level_zone_connect_value_for_slot(level, target_zone);
+}
+
 /*
  * Check invariant: for each zone, for each exit in its exit list, the adjacent
  * zone (the zone fline connect points to) should also list that fline (pass back).
@@ -1306,8 +1339,6 @@ static void log_broken_floor_line_connects(LevelState *level)
         if (connect < 0) continue;
         if (level_connect_to_zone_index(level, connect) >= 0) continue;
 
-        int correct_zone = 0; // TODO: Work this out
-
         /* Log only; do not patch the connect word. */
         /* Fline f has broken connect; log each zone that lists f: zone info then each exit fline info. */
         int z1 = zone_a[f];
@@ -1315,11 +1346,12 @@ static void log_broken_floor_line_connects(LevelState *level)
         for (int zi = 0; zi < 2; zi++) {
             int z = (zi == 0) ? z1 : z2;
             if (z < 0) continue;
+            int expected_connect = level_expected_connect_for_exit_zone(level, z, z1, z2);
             int32_t zoff = read_long(level->zone_adds + (size_t)z * 4u);
             if (zoff < 0) continue;
             const uint8_t *zd = level->data + zoff;
-            printf("[LEVEL]   zone %d (fline %d broken connect %d, should be zone %d): id=%d floor=%ld roof=%ld upper_floor=%ld upper_roof=%ld water=%ld bright=%d upper_bright=%d tel_zone=%d tel_x=%d tel_z=%d\n",
-                   z, f, (int)connect, correct_zone,
+            printf("[LEVEL]   zone %d (fline %d broken connect %d, expected connect %d): id=%d floor=%ld roof=%ld upper_floor=%ld upper_roof=%ld water=%ld bright=%d upper_bright=%d tel_zone=%d tel_x=%d tel_z=%d\n",
+                   z, f, (int)connect, expected_connect,
                    (int)read_word(zd + 0),
                    (long)read_long(zd + ZONE_OFF_FLOOR), (long)read_long(zd + ZONE_OFF_ROOF),
                    (long)read_long(zd + ZONE_OFF_UPPER_FLOOR), (long)read_long(zd + ZONE_OFF_UPPER_ROOF),
@@ -1335,10 +1367,10 @@ static void log_broken_floor_line_connects(LevelState *level)
                 const uint8_t *fl = flines + (size_t)entry * 16u;
                 int fl_connect = (int)read_word(fl + 8);
                 if (entry == f)
-                    printf("[LEVEL]     fline %d: x=%d z=%d xlen=%d zlen=%d connect=%d (should be zone %d) length=%d normal=%d away=%d\n",
+                    printf("[LEVEL]     fline %d: x=%d z=%d xlen=%d zlen=%d connect=%d (expected connect %d) length=%d normal=%d away=%d\n",
                            entry,
                            (int)read_word(fl + 0), (int)read_word(fl + 2), (int)read_word(fl + 4), (int)read_word(fl + 6),
-                           fl_connect, correct_zone,
+                           fl_connect, expected_connect,
                            (int)read_word(fl + 10), (int)read_word(fl + 12), (int)read_word(fl + 14));
                 else
                     printf("[LEVEL]     fline %d: x=%d z=%d xlen=%d zlen=%d connect=%d length=%d normal=%d away=%d\n",
