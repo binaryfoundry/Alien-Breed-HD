@@ -141,6 +141,8 @@ Use preset **`emscripten-threaded-release`**, or **`emcmake cmake .. -DAB3D_NO_T
 
 The linker emits `index.html`, `index.js`, and `index.wasm` in the build directory (plus packaged assets). Game data is staged into `build-web/em_preload/` at build time and embedded with `--preload-file` so the browser MEMFS layout matches the desktop layout (`/data/...`, `ab3d.ini` at `/`).
 
+In normal progression, the web build plays the first 8 levels, then loops back to level 1. Browser autosaves and menu options persist in local storage for that site.
+
 Serve the build folder over HTTP (local file URLs will not load WASM reliably), for example:
 
 ```bash

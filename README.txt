@@ -40,13 +40,15 @@ GAME / UI
 - P: Pause
 - Tab: Toggle automap
 - Page Up / Page Down: Automap zoom in/out
-- F5: Quick save
-- F9: Quick load
+- Esc: Open the in-game menu; also releases mouse capture when captured
+- Autosaves: Load from the Autosaves menu
+- F5/F9: Quick save/load only when quicksave_load=1 is enabled in ab3d.ini
 - F6: Toggle Gouraud visualize mode
-- Esc:
-  - If mouse is captured, releases mouse capture
-  - Otherwise, exits the game
 
 MOUSE CAPTURE
 - The mouse pointer is visible until you left-click inside the game window to capture it (windowed or fullscreen).
-- Press Esc while captured to release capture and show the pointer again.
+- Press Esc while captured to release capture, show the pointer again, and open the menu.
+
+WEB BUILD
+- The web build plays the first 8 levels, then loops back to level 1.
+- Browser autosaves, menu options, and settings persist in local storage for the site.
