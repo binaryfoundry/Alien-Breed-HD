@@ -38,6 +38,11 @@
 #define ENEMY_BURN_DAMAGE_TICKS        50
 #define ENEMY_BURN_PARTICLE_TICKS      7
 #define ENEMY_BURN_SCREAM_NOISEVOL     200
+#define ENEMY_BURN_PARTICLE_MAX_ACTIVE 48
+#define ENEMY_BURN_PARTICLE_LIFETIME_TICKS 28
+#define ENEMY_BURN_WANDER_TIMER_BASE   10
+#define ENEMY_BURN_WANDER_TIMER_MASK   15
+#define SHOT_FLAG_VISUAL_ONLY          0x4000
 
 /* Big-endian read/write helpers (Amiga data is big-endian) */
 static inline int16_t be16(const uint8_t *p) {
@@ -824,6 +829,39 @@ static GameObject *find_free_shot_slot(uint8_t *shots, int16_t *saved_cid)
     return find_free_shot_slot_in_pool(shots, PLAYER_SHOT_SLOT_COUNT, saved_cid);
 }
 
+static GameObject *find_free_burn_flame_slot(GameState *state, int16_t *saved_cid)
+{
+    GameObject *first_free = NULL;
+    int16_t first_free_cid = -1;
+    int active = 0;
+
+    if (!state || !state->level.nasty_shot_data)
+        return NULL;
+
+    uint8_t *shots = state->level.nasty_shot_data;
+    for (int i = 0; i < NASTY_SHOT_SLOT_COUNT; i++) {
+        GameObject *candidate = (GameObject *)(shots + i * OBJECT_SIZE);
+        if (OBJ_ZONE(candidate) >= 0) {
+            if (candidate->obj.number == OBJ_NBR_BULLET &&
+                SHOT_SIZE(*candidate) == AB3D_GUN_FLAMETHROWER &&
+                (SHOT_FLAGS(*candidate) & SHOT_FLAG_VISUAL_ONLY)) {
+                active++;
+                if (active >= ENEMY_BURN_PARTICLE_MAX_ACTIVE)
+                    return NULL;
+            }
+            continue;
+        }
+
+        if (!first_free) {
+            first_free = candidate;
+            first_free_cid = OBJ_CID(candidate);
+        }
+    }
+
+    if (saved_cid) *saved_cid = first_free_cid;
+    return first_free;
+}
+
 /* Amiga Noisevol (sfx importance / channel mix) → PC mixer 0–255 (see SoundPlayer.s). */
 static inline int amiga_noisevol_to_pc(int noisevol)
 {
@@ -1067,8 +1105,7 @@ static void enemy_spawn_burn_flame_particle(GameObject *obj, GameState *state,
     if (obj_index < 0 || obj_index >= MAX_OBJECTS)
         return;
 
-    part = find_free_shot_slot_in_pool(state->level.nasty_shot_data,
-                                       NASTY_SHOT_SLOT_COUNT, &saved_cid);
+    part = find_free_burn_flame_slot(state, &saved_cid);
     if (!part || saved_cid < 0 ||
         saved_cid >= state->level.num_object_points)
         return;
@@ -1110,11 +1147,11 @@ static void enemy_spawn_burn_flame_particle(GameObject *obj, GameState *state,
     SHOT_STATUS(*part) = 0;
     SHOT_ANIM(*part) = (uint8_t)(rand() % 6);
     SHOT_SET_ANIM_ACCUM(*part, 0);
-    SHOT_SET_LIFE(*part, (int16_t)(rand() % 12));
+    SHOT_SET_LIFE(*part, (int16_t)(rand() % 8));
     SHOT_SET_ACCYPOS(*part, (int32_t)py << 7);
     SHOT_SET_YVEL(*part, (int16_t)(-48 - (rand() % 48)));
     SHOT_SET_GRAV(*part, 0);
-    SHOT_SET_FLAGS(*part, 0);
+    SHOT_SET_FLAGS(*part, SHOT_FLAG_VISUAL_ONLY);
     SHOT_SET_XVEL(*part, (int32_t)(((rand() & 3) - 1) << 16));
     SHOT_SET_ZVEL(*part, (int32_t)(((rand() & 3) - 1) << 16));
     NASTY_SET_EFLAGS(*part, 0);
@@ -1146,6 +1183,7 @@ static void enemy_spawn_burn_flame_particle(GameObject *obj, GameState *state,
 static void enemy_ignite_burning(GameObject *obj, GameState *state, int obj_index)
 {
     int16_t duration;
+    bool was_burning;
 
     if (!obj || !state || obj_index < 0 || obj_index >= MAX_OBJECTS)
         return;
@@ -1154,12 +1192,15 @@ static void enemy_ignite_burning(GameObject *obj, GameState *state, int obj_inde
     if (NASTY_LIVES(*obj) <= 0)
         return;
 
+    was_burning = state->enemy_burn_time_left[obj_index] > 0;
     duration = enemy_burn_new_duration();
     if (state->enemy_burn_time_left[obj_index] < duration)
         state->enemy_burn_time_left[obj_index] = duration;
     state->enemy_burn_damage_accum[obj_index] = 0;
     if (state->enemy_burn_particle_timer[obj_index] <= 0)
         state->enemy_burn_particle_timer[obj_index] = 1;
+    if (!was_burning)
+        NASTY_SET_TIMER(*obj, 1);
     obj->obj.worry = 127;
 }
 
@@ -1583,9 +1624,10 @@ static void enemy_apply_step_limits(const GameObject *obj,
 /* -----------------------------------------------------------------------
  * Enemy common: wander behavior using Amiga-style ObjTimer ranges.
  * ----------------------------------------------------------------------- */
-static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
-                                    GameState *state, int16_t timer_base,
-                                    int16_t timer_mask)
+static void enemy_wander_with_timer_mode(GameObject *obj, const EnemyParams *params,
+                                         GameState *state, int16_t timer_base,
+                                         int16_t timer_mask,
+                                         bool force_random_facing)
 {
     bool flying_hover = (obj->obj.number == OBJ_NBR_FLYING_NASTY ||
                          obj->obj.number == OBJ_NBR_EYEBALL);
@@ -1598,6 +1640,11 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
             timer = (int16_t)(timer + (rand() & timer_mask));
         }
 
+        if (!flying_hover || force_random_facing) {
+            int16_t new_facing = (int16_t)(rand() & 8190);
+            NASTY_SET_FACING(*obj, new_facing);
+        }
+
         if (flying_hover) {
             /* Amiga EyeBall/FlyingScalyBall: ObjTimer rollover updates
              * TurnSpeed + objyvel (not an immediate random Facing snap). */
@@ -1608,9 +1655,6 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
             int16_t yv = (int16_t)(((rand() >> 4) & 7) - 3);
             yv = (int16_t)(yv - ((rand() >> 5) & 1));
             OBJ_SET_TD_W(obj, ENEMY_OBJ_YVEL_OFF, yv);
-        } else {
-            int16_t new_facing = (int16_t)(rand() & 8190);
-            NASTY_SET_FACING(*obj, new_facing);
         }
     }
 
@@ -1730,6 +1774,33 @@ static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
             NASTY_SET_TIMER(*obj, -1);
         }
     }
+}
+
+static void enemy_wander_with_timer(GameObject *obj, const EnemyParams *params,
+                                    GameState *state, int16_t timer_base,
+                                    int16_t timer_mask)
+{
+    enemy_wander_with_timer_mode(obj, params, state, timer_base, timer_mask, false);
+}
+
+static void enemy_burn_wander(GameObject *obj, const EnemyParams *params,
+                              GameState *state)
+{
+    int16_t timer;
+    int16_t max_timer;
+
+    if (!obj || !params || !state)
+        return;
+
+    timer = NASTY_TIMER(*obj);
+    max_timer = ENEMY_BURN_WANDER_TIMER_BASE + ENEMY_BURN_WANDER_TIMER_MASK;
+    if (timer > max_timer)
+        NASTY_SET_TIMER(*obj, 1);
+
+    enemy_wander_with_timer_mode(obj, params, state,
+                                 ENEMY_BURN_WANDER_TIMER_BASE,
+                                 ENEMY_BURN_WANDER_TIMER_MASK,
+                                 true);
 }
 
 /* -----------------------------------------------------------------------
@@ -2587,6 +2658,9 @@ static void enemy_handle_big_red_variant(GameObject *obj, GameState *state, bool
             }
         }
         OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_timer);
+    } else if (burning) {
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 70);
+        enemy_burn_wander(obj, params, state);
     } else {
         (void)enemy_tick_third_timer(obj, state, can_see, 20, 63);
         OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 70);
@@ -2637,6 +2711,9 @@ void object_handle_alien(GameObject *obj, GameState *state)
             }
         }
         OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_timer);
+    } else if (burning) {
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 25);
+        enemy_burn_wander(obj, params, state);
     } else {
         (void)enemy_tick_third_timer(obj, state, can_see, 20, 63);
         OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 25);
@@ -2727,6 +2804,9 @@ void object_handle_robot(GameObject *obj, GameState *state)
             }
         }
         OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_timer);
+    } else if (burning) {
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 30);
+        enemy_burn_wander(obj, params, state);
     } else {
         (void)enemy_tick_third_timer(obj, state, can_see, 20, 63);
         OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 30);
@@ -2824,6 +2904,9 @@ void object_handle_worm(GameObject *obj, GameState *state)
             enemy_fire_at_player(obj, state, target_player, 5, 10, 16, 3);
         }
         OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_timer);
+    } else if (burning) {
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 30);
+        enemy_burn_wander(obj, params, state);
     } else {
         (void)enemy_tick_third_timer(obj, state, can_see, 20, 63);
         OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 30);
@@ -3364,6 +3447,9 @@ void object_handle_marine(GameObject *obj, GameState *state)
             }
             OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_timer);
         }
+    } else if (burning) {
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_reset);
+        enemy_burn_wander(obj, params, state);
     } else {
         (void)enemy_tick_third_timer(obj, state, can_see, 20, 63);
         OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_reset);
@@ -3418,6 +3504,8 @@ void object_handle_big_nasty(GameObject *obj, GameState *state)
             enemy_fire_at_player(obj, state, target_player, 1, 10, 16, 4);
         }
         OBJ_SET_TD_W(obj, ENEMY_SEC_TIMER_OFF, sec_timer);
+    } else if (burning) {
+        enemy_burn_wander(obj, params, state);
     } else {
         enemy_wander_with_timer(obj, params, state, 20, 15);
     }
@@ -3495,6 +3583,9 @@ void object_handle_flying_nasty(GameObject *obj, GameState *state)
             enemy_fire_at_player(obj, state, target_player, 0, 5, 16, 3);
             fired_this_tick = true;
         }
+    } else if (burning) {
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 30);
+        enemy_burn_wander(obj, params, state);
     } else {
         /* Continuous rotation while prowling */
         int16_t facing = NASTY_FACING(*obj);
@@ -3598,6 +3689,9 @@ void object_handle_tree(GameObject *obj, GameState *state)
             fired_this_tick = true;
         }
         OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, fourth_timer);
+    } else if (burning) {
+        OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 30);
+        enemy_burn_wander(obj, params, state);
     } else {
         (void)enemy_tick_third_timer(obj, state, can_see, 20, 63);
         OBJ_SET_TD_W(obj, ENEMY_FOURTH_TIMER_OFF, 30);
@@ -4207,6 +4301,29 @@ void object_handle_bullet(GameObject *obj, GameState *state)
             anim_steps--;
         }
         SHOT_ANIM(*obj) = anim_idx;
+    }
+
+    if (flags & SHOT_FLAG_VISUAL_ONLY) {
+        int idx = (int)OBJ_CID(obj);
+        if (!state->level.object_points || idx < 0 ||
+            idx >= state->level.num_object_points ||
+            life > ENEMY_BURN_PARTICLE_LIFETIME_TICKS) {
+            OBJ_SET_ZONE(obj, -1);
+            SHOT_STATUS(*obj) = 0;
+            SHOT_ANIM(*obj) = 0;
+            return;
+        }
+
+        uint8_t *bullet_pts = state->level.object_points + (uint32_t)idx * 8u;
+        int32_t bx_fp = obj_l(bullet_pts) + xvel * state->temp_frames;
+        int32_t bz_fp = obj_l(bullet_pts + 4) + zvel * state->temp_frames;
+        int32_t accypos = SHOT_ACCYPOS(*obj) + (int32_t)yvel * state->temp_frames;
+
+        obj_sl(bullet_pts, bx_fp);
+        obj_sl(bullet_pts + 4, bz_fp);
+        SHOT_SET_ACCYPOS(*obj, accypos);
+        obj_sw(obj->raw + 4, (int16_t)(accypos >> 7));
+        return;
     }
 
     /* Position is in object_points at OBJ_CID (works for both object_data and nasty_shot_data bullets). */
