@@ -10,6 +10,7 @@
 #include "logging.h"
 
 #include <emscripten.h>
+#include <SDL.h>
 #include <stdbool.h>
 #include <stdio.h>
 
@@ -37,6 +38,7 @@ static GameLoopCtx g_em_gl_ctx;
 static GameLoopCtx g_em_front_menu_ctx;
 static bool g_em_show_level_text;
 static int g_em_text_step;
+static Uint32 g_em_text_wait_started_ms;
 /* 0 = run begin, 1 = fading music, 2 = run finish */
 static int g_em_outer_sub;
 
@@ -44,6 +46,7 @@ static void em_begin_level_phase(GameState *st)
 {
     g_em_show_level_text = play_the_game_should_show_level_text(st) ? true : false;
     g_em_text_step = 0;
+    g_em_text_wait_started_ms = 0;
     g_em_phase = g_em_show_level_text ? EM_TEXT_FADE_IN : EM_PREP;
 }
 
@@ -81,6 +84,7 @@ static void em_frame(void)
                 st->finished_level = 0;
                 g_em_phase = EM_AFTER;
             } else {
+                g_em_text_wait_started_ms = SDL_GetTicks();
                 g_em_phase = EM_TEXT_WAIT;
             }
         }
@@ -95,6 +99,21 @@ static void em_frame(void)
     {
         display_emscripten_frame_resize_poll();
         play_the_game_present_level_text(st, 255);
+        Uint32 now = SDL_GetTicks();
+        Uint32 min_dismiss_ms =
+            (Uint32)play_the_game_level_text_min_dismiss_ms();
+        if (g_em_text_wait_started_ms == 0)
+            g_em_text_wait_started_ms = now;
+        if (min_dismiss_ms > 0 &&
+            (Uint32)(now - g_em_text_wait_started_ms) < min_dismiss_ms) {
+            if (play_the_game_drain_level_text_input(st) < 0) {
+                st->running = false;
+                st->finished_level = 0;
+                g_em_phase = EM_AFTER;
+            }
+            return;
+        }
+
         int input = play_the_game_poll_level_text_input(st);
         if (input < 0) {
             st->running = false;

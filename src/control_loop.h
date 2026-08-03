@@ -27,6 +27,7 @@ int  play_game_apply_front_menu_result(GameState *state, int menu_result);
 /* Original AB3DI.s DrawLevelText / PlayTheGame text-screen intro helpers. */
 int  play_the_game_should_show_level_text(const GameState *state);
 int  play_the_game_level_text_fade_steps(void);
+int  play_the_game_level_text_min_dismiss_ms(void);
 int  play_the_game_level_text_alpha_for_step(int step);
 void play_the_game_present_level_text(GameState *state, int alpha);
 int  play_the_game_drain_level_text_input(GameState *state); /* -1 = quit, 0 = drained */

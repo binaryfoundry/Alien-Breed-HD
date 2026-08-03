@@ -41,6 +41,7 @@
 
 #define LEVEL_TEXT_FADE_STEPS_NATIVE 8
 #define LEVEL_TEXT_FADE_FRAME_MS     20
+#define LEVEL_TEXT_MIN_DISMISS_MS    750
 
 static void control_game_over_fade_tick(float progress_0_to_1, void *userdata);
 static void control_level_complete_fade_tick(float progress_0_to_1, void *userdata);
@@ -274,6 +275,11 @@ int play_the_game_level_text_fade_steps(void)
     return LEVEL_TEXT_FADE_STEPS_NATIVE;
 }
 
+int play_the_game_level_text_min_dismiss_ms(void)
+{
+    return LEVEL_TEXT_MIN_DISMISS_MS;
+}
+
 int play_the_game_level_text_alpha_for_step(int step)
 {
     int steps = play_the_game_level_text_fade_steps();
@@ -408,8 +414,23 @@ static int control_level_text_wait_and_fade_out(GameState *state)
         return 0;
     }
 
+    Uint32 wait_started_ms = SDL_GetTicks();
+    Uint32 min_dismiss_ms =
+        (Uint32)play_the_game_level_text_min_dismiss_ms();
+
     for (;;) {
         play_the_game_present_level_text(state, 255);
+        if (min_dismiss_ms > 0 &&
+            (Uint32)(SDL_GetTicks() - wait_started_ms) < min_dismiss_ms) {
+            if (play_the_game_drain_level_text_input(state) < 0) {
+                state->running = false;
+                state->finished_level = 0;
+                return 0;
+            }
+            SDL_Delay(16);
+            continue;
+        }
+
         int input = play_the_game_poll_level_text_input(state);
         if (input < 0) {
             state->running = false;
