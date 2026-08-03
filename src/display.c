@@ -1298,6 +1298,10 @@ static int display_gl_array_layer_blit(GLuint tex, int layer, int layer_count,
         !g_gl_tex_parameteri2 || g_gl_overlay_win_w < 1) {
         return 0;
     }
+    if (g_gl_get_error) {
+        for (int i = 0; i < 8 && g_gl_get_error() != 0; i++) {
+        }
+    }
 
     int wx = g_gl_overlay_win_w, wy = g_gl_overlay_win_h;
     float nx0, ny0, nx1, ny1, nx2, ny2, nx3, ny3;
@@ -1333,6 +1337,10 @@ static int display_gl_array_layer_blit(GLuint tex, int layer, int layer_count,
     g_gl_bind_buffer(0x8892, g_gl_hud_vbo);
     g_gl_buffer_data(0x8892, (ptrdiff_t)sizeof(buf), buf, GL_STREAM_DRAW);
     g_gl_draw_arrays(GL_TRIANGLES, 0, 6);
+    if (g_gl_get_error && g_gl_get_error() != 0) {
+        g_gl_bind_texture(DGL_TEXTURE_2D_ARRAY, 0);
+        return 0;
+    }
     g_gl_bind_texture(DGL_TEXTURE_2D_ARRAY, 0);
     return 1;
 }
@@ -2019,8 +2027,6 @@ static void display_ascii_font_upload_array_texture(void)
                          (GLint)DGL_CLAMP_TO_EDGE);
     g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_WRAP_T,
                          (GLint)DGL_CLAMP_TO_EDGE);
-    g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_WRAP_R,
-                         (GLint)DGL_CLAMP_TO_EDGE);
     g_gl_tex_image_3d(DGL_TEXTURE_2D_ARRAY, 0, (GLint)GL_RGBA8,
                       DISPLAY_ASCII_CELL_W, DISPLAY_ASCII_CELL_H,
                       DISPLAY_ASCII_COUNT, 0, GL_RGBA, GL_UNSIGNED_BYTE,
@@ -2161,8 +2167,7 @@ static void display_bitmap_text_span_abs(const char *text, int start, int len,
             dst.y = y;
             dst.w = draw_w;
             dst.h = draw_h;
-            if (!display_gl_font_glyph_blit(idx, &dst, alpha) &&
-                !(g_gl_unpack_ok && g_gl_hud_ok)) {
+            if (!display_gl_font_glyph_blit(idx, &dst, alpha)) {
                 display_overlay_copy(g_ascii_font_tex, &src, &dst);
             }
         }
@@ -3666,8 +3671,6 @@ static void display_hud_digit_upload_array_texture(int kind)
                          (GLint)DGL_CLAMP_TO_EDGE);
     g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_WRAP_T,
                          (GLint)DGL_CLAMP_TO_EDGE);
-    g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_WRAP_R,
-                         (GLint)DGL_CLAMP_TO_EDGE);
     g_gl_tex_image_3d(DGL_TEXTURE_2D_ARRAY, 0, (GLint)GL_RGBA8,
                       layer_w, layer_h, DISPLAY_HUD_DIGIT_COUNT, 0,
                       GL_RGBA, GL_UNSIGNED_BYTE, layers);
@@ -3918,8 +3921,7 @@ static void hud_draw_three_slot_value(int kind, SDL_Texture *tex, int tex_w, int
         dst.w = px1i - px0i;
         if (dst.w < 1) dst.w = 1;
         dst.h = sh;
-        if (!hud_digit_gl_blit(kind, d, &dst) &&
-            !(g_gl_unpack_ok && g_gl_hud_ok)) {
+        if (!hud_digit_gl_blit(kind, d, &dst)) {
             display_overlay_copy(tex, &src, &dst);
         }
     }
@@ -3984,8 +3986,7 @@ static void display_fps_overlay(const GameState *state)
         dst.w = px1i - px0i;
         if (dst.w < 1) dst.w = 1;
         dst.h = sh;
-        if (!hud_digit_gl_blit(1, d, &dst) &&
-            !(g_gl_unpack_ok && g_gl_hud_ok)) {
+        if (!hud_digit_gl_blit(1, d, &dst)) {
             display_overlay_copy(tex, &src, &dst);
         }
     }
