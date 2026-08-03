@@ -169,6 +169,9 @@ static void display_emscripten_apply_screen_aspect_resolution(int *out_w,
 #ifndef GL_TEXTURE0
 #define GL_TEXTURE0 0x84C0
 #endif
+#ifndef GL_UNPACK_ALIGNMENT
+#define GL_UNPACK_ALIGNMENT 0x0CF5
+#endif
 
 #if SDL_VERSION_ATLEAST(2, 0, 12)
 typedef void (APIENTRY *DisplayGlGenMipmapFn)(GLenum target);
@@ -202,6 +205,7 @@ static void         display_hud_digits_ensure_loaded(void);
 #define DISPLAY_ASCII_FONT_PATH       "fonts/ascii_font/ascii_font_green_black_atlas_v2.png"
 #define DISPLAY_ASCII_FIRST           32
 #define DISPLAY_ASCII_LAST            126
+#define DISPLAY_ASCII_COUNT           (DISPLAY_ASCII_LAST - DISPLAY_ASCII_FIRST + 1)
 #define DISPLAY_ASCII_COLS            16
 #define DISPLAY_ASCII_CELL_W          12
 #define DISPLAY_ASCII_CELL_H          17
@@ -220,10 +224,14 @@ static int          g_ascii_font_tex_w;
 static int          g_ascii_font_tex_h;
 static int          g_ascii_font_load_attempted;
 static int          g_ascii_font_mipmap_ok;
+static GLuint       g_ascii_font_array_tex;
+static int          g_ascii_font_array_ok;
+static int          g_ascii_font_array_upload_attempted;
 static char         g_text_lines[DISPLAY_TEXT_MAX_LINES][DISPLAY_TEXT_MAX_CHARS];
 static uint8_t      g_text_line_used[DISPLAY_TEXT_MAX_LINES];
 static uint8_t      g_text_line_alpha[DISPLAY_TEXT_MAX_LINES];
 static void         display_ascii_font_free(void);
+static void         display_ascii_font_upload_array_texture(void);
 static void         display_text_screen_draw(Uint8 alpha);
 static void         display_text_screen_draw_in_rect(Uint8 alpha, SDL_Rect r);
 
@@ -284,6 +292,8 @@ static int g_fb_mipmap_fail_logged;
 #define DGL_TEXTURE_MAG_FILTER 0x2800
 #define DGL_TEXTURE_WRAP_S 0x2802
 #define DGL_TEXTURE_WRAP_T 0x2803
+#define DGL_TEXTURE_WRAP_R 0x8072
+#define DGL_TEXTURE_2D_ARRAY 0x8C1A
 #define DGL_LINEAR_MIPMAP_LINEAR 0x2703
 #define DGL_LINEAR 0x2601
 #define DGL_CLAMP_TO_EDGE 0x812F
@@ -380,6 +390,7 @@ typedef void   (APIENTRY *DisplayGlLinkProgramFn)(GLuint program);
 typedef void   (APIENTRY *DisplayGlPixelStoreiFn)(GLenum pname, GLint param);
 typedef void   (APIENTRY *DisplayGlShaderSourceFn)(GLuint shader, GLsizei count, const GLchar *const*string, const GLint *length);
 typedef void   (APIENTRY *DisplayGlTexImage2DFn)(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *pixels);
+typedef void   (APIENTRY *DisplayGlTexImage3DFn)(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const void *pixels);
 typedef void   (APIENTRY *DisplayGlTexParameteriFn2)(GLenum target, GLenum pname, GLint param);
 typedef void   (APIENTRY *DisplayGlTexSubImage2DFn)(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void *pixels);
 typedef void   (APIENTRY *DisplayGlUniform1iFn)(GLint location, GLint v0);
@@ -459,6 +470,7 @@ static GLuint g_gun_gl_frames[GUN_GL_FRAME_COUNT];
  * SDL_GL_BindTexture + our own GLSL (same context as the 12-bit present shader). */
 static int g_gl_hud_ok;
 static GLuint g_gl_prog_hud_tex;
+static GLuint g_gl_prog_hud_font;
 static GLuint g_gl_prog_hud_solid;
 static GLuint g_gl_hud_vao_tex;
 static GLuint g_gl_hud_vao_solid;
@@ -466,6 +478,9 @@ static GLuint g_gl_hud_vbo;
 static GLint g_gl_hud_loc_tex;
 static GLint g_gl_hud_loc_color_tex;
 static GLint g_gl_hud_loc_rb_swap;
+static GLint g_gl_hud_loc_font_tex;
+static GLint g_gl_hud_loc_font_color;
+static GLint g_gl_hud_loc_font_layer;
 static GLint g_gl_hud_loc_color_solid;
 static int g_gl_overlay_win_w;
 static int g_gl_overlay_win_h;
@@ -504,6 +519,7 @@ static DisplayGlLinkProgramFn            g_gl_link_program;
 static DisplayGlPixelStoreiFn              g_gl_pixel_storei;
 static DisplayGlShaderSourceFn             g_gl_shader_source;
 static DisplayGlTexImage2DFn               g_gl_tex_image_2d;
+static DisplayGlTexImage3DFn               g_gl_tex_image_3d;
 static DisplayGlTexParameteriFn2           g_gl_tex_parameteri2;
 static DisplayGlTexSubImage2DFn            g_gl_tex_sub_image_2d;
 static DisplayGlUniform1iFn               g_gl_uniform1i;
@@ -639,6 +655,7 @@ static int display_gl_load_procs(void)
     g_gl_pixel_storei = (DisplayGlPixelStoreiFn)SDL_GL_GetProcAddress("glPixelStorei");
     g_gl_shader_source = (DisplayGlShaderSourceFn)SDL_GL_GetProcAddress("glShaderSource");
     g_gl_tex_image_2d = (DisplayGlTexImage2DFn)SDL_GL_GetProcAddress("glTexImage2D");
+    g_gl_tex_image_3d = (DisplayGlTexImage3DFn)SDL_GL_GetProcAddress("glTexImage3D");
     g_gl_tex_parameteri2 = (DisplayGlTexParameteriFn2)SDL_GL_GetProcAddress("glTexParameteri");
     g_gl_tex_sub_image_2d = (DisplayGlTexSubImage2DFn)SDL_GL_GetProcAddress("glTexSubImage2D");
     g_gl_uniform1i = (DisplayGlUniform1iFn)SDL_GL_GetProcAddress("glUniform1i");
@@ -723,6 +740,18 @@ static const char hud_tex_fs_src[] =
     "  o_col = t * u_color;\n"
     "}\n";
 
+static const char hud_font_fs_src[] =
+    "#version 300 es\n"
+    "precision mediump float;\n"
+    "uniform sampler2DArray u_tex;\n"
+    "uniform vec4 u_color;\n"
+    "uniform float u_layer;\n"
+    "in vec2 v_uv;\n"
+    "out vec4 o_col;\n"
+    "void main() {\n"
+    "  o_col = texture(u_tex, vec3(v_uv, u_layer)) * u_color;\n"
+    "}\n";
+
 static const char hud_solid_vs_src[] =
     "#version 300 es\n"
     "precision highp float;\n"
@@ -759,6 +788,17 @@ static const char hud_tex_fs_src[] =
     "  o_col = t * u_color;\n"
     "}\n";
 
+static const char hud_font_fs_src[] =
+    "#version 330 core\n"
+    "uniform sampler2DArray u_tex;\n"
+    "uniform vec4 u_color;\n"
+    "uniform float u_layer;\n"
+    "in vec2 v_uv;\n"
+    "out vec4 o_col;\n"
+    "void main() {\n"
+    "  o_col = texture(u_tex, vec3(v_uv, u_layer)) * u_color;\n"
+    "}\n";
+
 static const char hud_solid_vs_src[] =
     "#version 330 core\n"
     "layout(location=0) in vec2 a_pos;\n"
@@ -787,10 +827,71 @@ static void display_gl_hud_shutdown(void)
     if (g_gl_delete_buffers && g_gl_hud_vbo) g_gl_delete_buffers(1, &g_gl_hud_vbo);
     g_gl_hud_vbo = 0;
     if (g_gl_delete_program && g_gl_prog_hud_tex) g_gl_delete_program(g_gl_prog_hud_tex);
+    if (g_gl_delete_program && g_gl_prog_hud_font) g_gl_delete_program(g_gl_prog_hud_font);
     if (g_gl_delete_program && g_gl_prog_hud_solid) g_gl_delete_program(g_gl_prog_hud_solid);
     g_gl_prog_hud_tex = 0;
+    g_gl_prog_hud_font = 0;
     g_gl_prog_hud_solid = 0;
+    g_gl_hud_loc_font_tex = -1;
+    g_gl_hud_loc_font_color = -1;
+    g_gl_hud_loc_font_layer = -1;
     g_gl_hud_ok = 0;
+}
+
+static void display_gl_hud_try_init_font_program(void)
+{
+    g_gl_prog_hud_font = 0;
+    g_gl_hud_loc_font_tex = -1;
+    g_gl_hud_loc_font_color = -1;
+    g_gl_hud_loc_font_layer = -1;
+
+    GLuint vs = display_gl_compile_shader(GL_VERTEX_SHADER, hud_tex_vs_src);
+    GLuint fs = display_gl_compile_shader(GL_FRAGMENT_SHADER, hud_font_fs_src);
+    if (!vs || !fs) {
+        if (vs) g_gl_delete_shader(vs);
+        if (fs) g_gl_delete_shader(fs);
+        return;
+    }
+
+    GLuint prog = g_gl_create_program();
+    if (!prog) {
+        g_gl_delete_shader(vs);
+        g_gl_delete_shader(fs);
+        return;
+    }
+    g_gl_attach_shader(prog, vs);
+    g_gl_attach_shader(prog, fs);
+    g_gl_delete_shader(vs);
+    g_gl_delete_shader(fs);
+    g_gl_link_program(prog);
+
+    GLint linked = 0;
+    g_gl_get_programiv(prog, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        char log[1024];
+        log[0] = 0;
+        if (g_gl_get_program_info_log)
+            g_gl_get_program_info_log(prog, (GLsizei)sizeof(log), NULL, log);
+        printf("[DISPLAY] HUD GL font array program link failed: %s\n", log);
+        g_gl_delete_program(prog);
+        return;
+    }
+
+    g_gl_hud_loc_font_tex = g_gl_get_uniform_location(prog, "u_tex");
+    g_gl_hud_loc_font_color = g_gl_get_uniform_location(prog, "u_color");
+    g_gl_hud_loc_font_layer = g_gl_get_uniform_location(prog, "u_layer");
+    if (g_gl_hud_loc_font_tex < 0 ||
+        g_gl_hud_loc_font_color < 0 ||
+        g_gl_hud_loc_font_layer < 0) {
+        printf("[DISPLAY] HUD GL font array program missing uniforms\n");
+        g_gl_delete_program(prog);
+        g_gl_hud_loc_font_tex = -1;
+        g_gl_hud_loc_font_color = -1;
+        g_gl_hud_loc_font_layer = -1;
+        return;
+    }
+
+    g_gl_prog_hud_font = prog;
 }
 
 static int display_gl_hud_try_init(void)
@@ -878,6 +979,8 @@ static int display_gl_hud_try_init(void)
     }
     g_gl_hud_loc_color_solid = g_gl_get_uniform_location(g_gl_prog_hud_solid, "u_color");
 
+    display_gl_hud_try_init_font_program();
+
     g_gl_gen_vertex_arrays(1, &g_gl_hud_vao_tex);
     g_gl_gen_vertex_arrays(1, &g_gl_hud_vao_solid);
     g_gl_gen_buffers(1, &g_gl_hud_vbo);
@@ -898,6 +1001,8 @@ static int display_gl_hud_try_init(void)
     g_gl_bind_vertex_array(0);
 
     g_gl_hud_ok = 1;
+    if (g_ascii_font_tex && !g_ascii_font_array_ok)
+        display_ascii_font_upload_array_texture();
     printf("[DISPLAY] HUD: GL overlay (SDL_GL_BindTexture + GLSL)\n");
     return 1;
 }
@@ -1121,6 +1226,61 @@ static void display_gl_texture_blit(SDL_Texture *tex, const SDL_Rect *src_opt, c
     SDL_GL_UnbindTexture(tex);
 }
 
+static int display_gl_font_glyph_blit(int glyph_idx, const SDL_Rect *dst, Uint8 alpha)
+{
+    if (!dst || glyph_idx < 0 || glyph_idx >= DISPLAY_ASCII_COUNT)
+        return 0;
+    if (!g_ascii_font_array_ok || !g_ascii_font_array_tex ||
+        !g_gl_unpack_ok || !g_gl_hud_ok || !g_gl_prog_hud_font ||
+        g_gl_overlay_win_w < 1) {
+        return 0;
+    }
+
+    float u0 = (float)DISPLAY_ASCII_DRAW_X / (float)DISPLAY_ASCII_CELL_W;
+    float v0 = (float)DISPLAY_ASCII_DRAW_Y / (float)DISPLAY_ASCII_CELL_H;
+    float u1 = (float)(DISPLAY_ASCII_DRAW_X + DISPLAY_ASCII_DRAW_W) /
+               (float)DISPLAY_ASCII_CELL_W;
+    float v1 = (float)(DISPLAY_ASCII_DRAW_Y + DISPLAY_ASCII_DRAW_H) /
+               (float)DISPLAY_ASCII_CELL_H;
+
+    int wx = g_gl_overlay_win_w, wy = g_gl_overlay_win_h;
+    float nx0, ny0, nx1, ny1, nx2, ny2, nx3, ny3;
+    display_gl_wnd_ndc((float)dst->x, (float)dst->y, wx, wy, &nx0, &ny0);
+    display_gl_wnd_ndc((float)(dst->x + dst->w), (float)dst->y, wx, wy,
+                       &nx1, &ny1);
+    display_gl_wnd_ndc((float)(dst->x + dst->w),
+                       (float)(dst->y + dst->h), wx, wy, &nx2, &ny2);
+    display_gl_wnd_ndc((float)dst->x, (float)(dst->y + dst->h), wx, wy,
+                       &nx3, &ny3);
+
+    float buf[24] = {
+        nx0, ny0, u0, v0,
+        nx1, ny1, u1, v0,
+        nx3, ny3, u0, v1,
+        nx1, ny1, u1, v0,
+        nx2, ny2, u1, v1,
+        nx3, ny3, u0, v1,
+    };
+
+    g_gl_active_texture(GL_TEXTURE0);
+    g_gl_bind_texture(DGL_TEXTURE_2D_ARRAY, g_ascii_font_array_tex);
+    g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_MIN_FILTER,
+                         (GLint)DGL_LINEAR_MIPMAP_LINEAR);
+    g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_MAG_FILTER,
+                         (GLint)GL_NEAREST);
+    g_gl_use_program(g_gl_prog_hud_font);
+    g_gl_uniform1i(g_gl_hud_loc_font_tex, 0);
+    g_gl_uniform4f(g_gl_hud_loc_font_color, 1.0f, 1.0f, 1.0f,
+                   (float)alpha / 255.0f);
+    g_gl_uniform1f(g_gl_hud_loc_font_layer, (float)glyph_idx);
+    g_gl_bind_vertex_array(g_gl_hud_vao_tex);
+    g_gl_bind_buffer(0x8892, g_gl_hud_vbo);
+    g_gl_buffer_data(0x8892, (ptrdiff_t)sizeof(buf), buf, GL_STREAM_DRAW);
+    g_gl_draw_arrays(GL_TRIANGLES, 0, 6);
+    g_gl_bind_texture(DGL_TEXTURE_2D_ARRAY, 0);
+    return 1;
+}
+
 static void display_gl_solid_rect_fill(const SDL_Rect *dst, Uint8 r, Uint8 g, Uint8 b, Uint8 a)
 {
     if (!dst || g_gl_overlay_win_w < 1) return;
@@ -1327,7 +1487,8 @@ static void display_overlay_fill_rect_abs(const SDL_Rect *rect, Uint8 r, Uint8 g
     }
 }
 
-static SDL_Texture *display_load_png_texture_argb(const char *rel_path, int *out_w, int *out_h,
+static unsigned char *display_load_png_rgba_asset(const char *rel_path,
+                                                  int *out_w, int *out_h,
                                                   const char *label)
 {
     char *base;
@@ -1335,7 +1496,7 @@ static SDL_Texture *display_load_png_texture_argb(const char *rel_path, int *out
     int w = 0, h = 0, comp = 0;
     unsigned char *rgba = NULL;
 
-    if (!g_sdl_ren || !rel_path || !*rel_path) return NULL;
+    if (!rel_path || !*rel_path) return NULL;
 
     base = SDL_GetBasePath();
     if (base) {
@@ -1360,6 +1521,22 @@ static SDL_Texture *display_load_png_texture_argb(const char *rel_path, int *out
         stbi_image_free(rgba);
         return NULL;
     }
+
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
+    return rgba;
+}
+
+static SDL_Texture *display_load_png_texture_argb(const char *rel_path, int *out_w, int *out_h,
+                                                  const char *label)
+{
+    int w = 0, h = 0;
+    unsigned char *rgba = NULL;
+
+    if (!g_sdl_ren || !rel_path || !*rel_path) return NULL;
+
+    rgba = display_load_png_rgba_asset(rel_path, &w, &h, label);
+    if (!rgba) return NULL;
 
     size_t npix = (size_t)w * (size_t)h;
     uint32_t *argb = (uint32_t *)malloc(npix * sizeof(uint32_t));
@@ -1601,6 +1778,13 @@ static void display_title_screen_ensure_loaded(void)
 
 static void display_ascii_font_free(void)
 {
+    if (g_ascii_font_array_tex && g_gl_delete_textures) {
+        g_gl_delete_textures(1, &g_ascii_font_array_tex);
+    }
+    g_ascii_font_array_tex = 0;
+    g_ascii_font_array_ok = 0;
+    g_ascii_font_array_upload_attempted = 0;
+
     if (g_ascii_font_tex) {
         SDL_DestroyTexture(g_ascii_font_tex);
         g_ascii_font_tex = NULL;
@@ -1611,12 +1795,127 @@ static void display_ascii_font_free(void)
     g_ascii_font_mipmap_ok = 0;
 }
 
+static void display_ascii_font_upload_array_texture(void)
+{
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+    int atlas_w = 0, atlas_h = 0;
+    unsigned char *atlas = NULL;
+    unsigned char *layers = NULL;
+    size_t layer_px = (size_t)DISPLAY_ASCII_CELL_W *
+                      (size_t)DISPLAY_ASCII_CELL_H;
+    size_t layer_bytes = layer_px * 4u;
+    size_t total_bytes = layer_bytes * (size_t)DISPLAY_ASCII_COUNT;
+
+    g_ascii_font_array_ok = 0;
+    if (!g_gl_unpack_ok || !g_gl_hud_ok || !g_gl_prog_hud_font)
+        return;
+    if (!g_gl_gen_textures || !g_gl_bind_texture || !g_gl_tex_image_3d ||
+        !g_gl_tex_parameteri2 || !g_gl_delete_textures || !g_gl_pixel_storei)
+        return;
+    if (g_ascii_font_array_upload_attempted)
+        return;
+    g_ascii_font_array_upload_attempted = 1;
+
+    if (!g_gl_generate_mipmap)
+        display_load_gl_mipmap_procs();
+    if (!g_gl_generate_mipmap)
+        return;
+
+    atlas = display_load_png_rgba_asset(DISPLAY_ASCII_FONT_PATH,
+                                        &atlas_w, &atlas_h,
+                                        "ASCII font");
+    if (!atlas)
+        return;
+    if (atlas_w != DISPLAY_ASCII_COLS * DISPLAY_ASCII_CELL_W ||
+        atlas_h < DISPLAY_ASCII_CELL_H) {
+        stbi_image_free(atlas);
+        return;
+    }
+
+    layers = (unsigned char *)malloc(total_bytes);
+    if (!layers) {
+        stbi_image_free(atlas);
+        return;
+    }
+    memset(layers, 0, total_bytes);
+
+    for (int glyph = 0; glyph < DISPLAY_ASCII_COUNT; glyph++) {
+        int col = glyph % DISPLAY_ASCII_COLS;
+        int row = glyph / DISPLAY_ASCII_COLS;
+        int src_x = col * DISPLAY_ASCII_CELL_W;
+        int src_y = row * DISPLAY_ASCII_CELL_H;
+        if (src_y + DISPLAY_ASCII_CELL_H > atlas_h)
+            continue;
+
+        unsigned char *dst_layer = layers + (size_t)glyph * layer_bytes;
+        for (int y = 0; y < DISPLAY_ASCII_CELL_H; y++) {
+            const unsigned char *src =
+                atlas + ((size_t)(src_y + y) * (size_t)atlas_w +
+                         (size_t)src_x) * 4u;
+            unsigned char *dst =
+                dst_layer + (size_t)y * (size_t)DISPLAY_ASCII_CELL_W * 4u;
+            memcpy(dst, src, (size_t)DISPLAY_ASCII_CELL_W * 4u);
+        }
+    }
+
+    if (g_ascii_font_array_tex) {
+        g_gl_delete_textures(1, &g_ascii_font_array_tex);
+        g_ascii_font_array_tex = 0;
+    }
+
+    if (g_gl_get_error) {
+        for (int i = 0; i < 8 && g_gl_get_error() != 0; i++) {
+        }
+    }
+
+    g_gl_gen_textures(1, &g_ascii_font_array_tex);
+    if (!g_ascii_font_array_tex) {
+        free(layers);
+        stbi_image_free(atlas);
+        return;
+    }
+    g_gl_bind_texture(DGL_TEXTURE_2D_ARRAY, g_ascii_font_array_tex);
+    g_gl_pixel_storei(GL_UNPACK_ALIGNMENT, 1);
+    g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_MIN_FILTER,
+                         (GLint)DGL_LINEAR_MIPMAP_LINEAR);
+    g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_MAG_FILTER,
+                         (GLint)GL_NEAREST);
+    g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_WRAP_S,
+                         (GLint)DGL_CLAMP_TO_EDGE);
+    g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_WRAP_T,
+                         (GLint)DGL_CLAMP_TO_EDGE);
+    g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_WRAP_R,
+                         (GLint)DGL_CLAMP_TO_EDGE);
+    g_gl_tex_image_3d(DGL_TEXTURE_2D_ARRAY, 0, (GLint)GL_RGBA8,
+                      DISPLAY_ASCII_CELL_W, DISPLAY_ASCII_CELL_H,
+                      DISPLAY_ASCII_COUNT, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                      layers);
+    g_gl_generate_mipmap(DGL_TEXTURE_2D_ARRAY);
+    g_gl_pixel_storei(GL_UNPACK_ALIGNMENT, 4);
+    g_gl_bind_texture(DGL_TEXTURE_2D_ARRAY, 0);
+
+    if (g_gl_get_error && g_gl_get_error() != 0) {
+        g_gl_delete_textures(1, &g_ascii_font_array_tex);
+        g_ascii_font_array_tex = 0;
+    } else {
+        g_ascii_font_array_ok = 1;
+        printf("[DISPLAY] ASCII font: GL texture array mipmaps active\n");
+    }
+
+    free(layers);
+    stbi_image_free(atlas);
+#else
+    (void)0;
+#endif
+}
+
 static void display_ascii_font_enable_scaling(void)
 {
     if (!g_ascii_font_tex) return;
 
 #if SDL_VERSION_ATLEAST(2, 0, 12)
     SDL_SetTextureScaleMode(g_ascii_font_tex, SDL_ScaleModeNearest);
+    display_ascii_font_upload_array_texture();
 
     if (g_gl_unpack_ok && g_gl_hud_ok) {
         if (!g_gl_generate_mipmap || !g_gl_tex_parameteri)
@@ -1733,7 +2032,8 @@ static void display_bitmap_text_span_abs(const char *text, int start, int len,
             dst.y = y;
             dst.w = draw_w;
             dst.h = draw_h;
-            display_overlay_copy(g_ascii_font_tex, &src, &dst);
+            if (!display_gl_font_glyph_blit(idx, &dst, alpha))
+                display_overlay_copy(g_ascii_font_tex, &src, &dst);
         }
 
         pen_x += advance;
