@@ -238,7 +238,6 @@ static SDL_Texture *g_ascii_font_tex;
 static int          g_ascii_font_tex_w;
 static int          g_ascii_font_tex_h;
 static int          g_ascii_font_load_attempted;
-static int          g_ascii_font_mipmap_ok;
 static GLuint       g_ascii_font_array_tex;
 static int          g_ascii_font_array_ok;
 static int          g_ascii_font_array_upload_attempted;
@@ -265,6 +264,7 @@ static void         display_text_screen_draw_in_rect(Uint8 alpha, SDL_Rect r);
 #define DISPLAY_TITLE_PAL_BYTES     (DISPLAY_TITLE_PAL_COLORS * DISPLAY_TITLE_PAL_ENTRY_BYTES)
 #define DISPLAY_TITLE_FULL_FADE_SCALE 252
 static SDL_Texture *g_title_screen_tex;
+static GLuint       g_title_screen_gl_tex;
 static int          g_title_screen_load_attempted;
 static void         display_title_screen_free(void);
 
@@ -481,8 +481,8 @@ static GLuint g_gl_vbo;
 #define GUN_GL_FRAME_COUNT 32
 static GLuint g_gun_gl_frames[GUN_GL_FRAME_COUNT];
 
-/* HUD overlays: SDL_Renderer GL backend does not reliably mix with raw glUseProgram; draw HUD with
- * SDL_GL_BindTexture + our own GLSL (same context as the 12-bit present shader). */
+/* HUD overlays: SDL_Renderer GL backend does not reliably mix with raw glUseProgram;
+ * draw native GL overlay textures with our own GLSL in the 12-bit present context. */
 static int g_gl_hud_ok;
 static GLuint g_gl_prog_hud_tex;
 static GLuint g_gl_prog_hud_font;
@@ -1022,7 +1022,7 @@ static int display_gl_hud_try_init(void)
         if (g_hud_digit_tex[i] && !g_hud_digit_array_ok[i])
             display_hud_digit_upload_array_texture(i);
     }
-    printf("[DISPLAY] HUD: GL overlay (SDL_GL_BindTexture + GLSL)\n");
+    printf("[DISPLAY] HUD: GL overlay (native textures + GLSL)\n");
     return 1;
 }
 
@@ -1168,6 +1168,22 @@ static void display_gl_overlay_end(void)
     g_gl_bind_buffer(0x8892 /* GL_ARRAY_BUFFER */, 0);
 }
 
+static void display_gl_reset_rgba_texture_unpack(int alignment)
+{
+    if (alignment != 1 && alignment != 2 && alignment != 4 && alignment != 8)
+        alignment = 4;
+    if (g_gl_bind_buffer)
+        g_gl_bind_buffer(0x88EC /* GL_PIXEL_UNPACK_BUFFER */, 0);
+    if (g_gl_pixel_storei) {
+        g_gl_pixel_storei(GL_UNPACK_ALIGNMENT, alignment);
+        g_gl_pixel_storei(0x0CF2 /* GL_UNPACK_ROW_LENGTH */, 0);
+        g_gl_pixel_storei(0x0CF3 /* GL_UNPACK_SKIP_ROWS */, 0);
+        g_gl_pixel_storei(0x0CF4 /* GL_UNPACK_SKIP_PIXELS */, 0);
+        g_gl_pixel_storei(0x806E /* GL_UNPACK_IMAGE_HEIGHT */, 0);
+        g_gl_pixel_storei(0x806D /* GL_UNPACK_SKIP_IMAGES */, 0);
+    }
+}
+
 static void display_gl_texture_blit(SDL_Texture *tex, const SDL_Rect *src_opt, const SDL_Rect *dst)
 {
     if (!tex || !dst || g_gl_overlay_win_w < 1) return;
@@ -1179,15 +1195,6 @@ static void display_gl_texture_blit(SDL_Texture *tex, const SDL_Rect *src_opt, c
         return;
     (void)tw_s;
     (void)th_s;
-#if SDL_VERSION_ATLEAST(2, 0, 12)
-    if (tex == g_ascii_font_tex && g_ascii_font_mipmap_ok &&
-        g_gl_tex_parameteri) {
-        g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_MIN_FILTER,
-                            (GLint)DGL_LINEAR_MIPMAP_LINEAR);
-        g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_MAG_FILTER,
-                            (GLint)GL_NEAREST);
-    }
-#endif
     int tw = 0, th = 0;
     if (SDL_QueryTexture(tex, NULL, NULL, &tw, &th) != 0 || tw < 1 || th < 1) {
         SDL_GL_UnbindTexture(tex);
@@ -1243,6 +1250,42 @@ static void display_gl_texture_blit(SDL_Texture *tex, const SDL_Rect *src_opt, c
     g_gl_buffer_data(0x8892, (ptrdiff_t)sizeof(buf), buf, GL_STREAM_DRAW);
     g_gl_draw_arrays(GL_TRIANGLES, 0, 6);
     SDL_GL_UnbindTexture(tex);
+}
+
+static void display_gl_texture_id_blit(GLuint tex, const SDL_Rect *dst, Uint8 alpha)
+{
+    if (!tex || !dst || !g_gl_hud_ok || g_gl_overlay_win_w < 1) return;
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    SDL_RenderFlush(g_sdl_ren);
+#endif
+    int wx = g_gl_overlay_win_w, wy = g_gl_overlay_win_h;
+    float nx0, ny0, nx1, ny1, nx2, ny2, nx3, ny3;
+    display_gl_wnd_ndc((float)dst->x, (float)dst->y, wx, wy, &nx0, &ny0);
+    display_gl_wnd_ndc((float)(dst->x + dst->w), (float)dst->y, wx, wy, &nx1, &ny1);
+    display_gl_wnd_ndc((float)(dst->x + dst->w), (float)(dst->y + dst->h), wx, wy, &nx2, &ny2);
+    display_gl_wnd_ndc((float)dst->x, (float)(dst->y + dst->h), wx, wy, &nx3, &ny3);
+
+    float buf[24] = {
+        nx0, ny0, 0.0f, 0.0f,
+        nx1, ny1, 1.0f, 0.0f,
+        nx3, ny3, 0.0f, 1.0f,
+        nx1, ny1, 1.0f, 0.0f,
+        nx2, ny2, 1.0f, 1.0f,
+        nx3, ny3, 0.0f, 1.0f,
+    };
+
+    g_gl_use_program(g_gl_prog_hud_tex);
+    if (g_gl_hud_loc_tex >= 0)       g_gl_uniform1i(g_gl_hud_loc_tex, 0);
+    if (g_gl_hud_loc_color_tex >= 0) g_gl_uniform4f(g_gl_hud_loc_color_tex, 1.0f, 1.0f, 1.0f,
+                                                   (float)alpha / 255.0f);
+    if (g_gl_hud_loc_rb_swap >= 0)   g_gl_uniform1f(g_gl_hud_loc_rb_swap, 0.0f);
+    g_gl_active_texture(GL_TEXTURE0);
+    g_gl_bind_texture(DGL_TEXTURE_2D, tex);
+    g_gl_bind_vertex_array(g_gl_hud_vao_tex);
+    g_gl_bind_buffer(0x8892, g_gl_hud_vbo);
+    g_gl_buffer_data(0x8892, (ptrdiff_t)sizeof(buf), buf, GL_STREAM_DRAW);
+    g_gl_draw_arrays(GL_TRIANGLES, 0, 6);
+    g_gl_bind_texture(DGL_TEXTURE_2D, 0);
 }
 
 static int display_gl_array_layer_blit(GLuint tex, int layer, int layer_count,
@@ -1708,6 +1751,11 @@ static SDL_Rect display_fit_rect(int win_w, int win_h, int src_w, int src_h)
 
 static void display_title_screen_free(void)
 {
+    if (g_title_screen_gl_tex && g_gl_delete_textures) {
+        g_gl_delete_textures(1, &g_title_screen_gl_tex);
+    }
+    g_title_screen_gl_tex = 0;
+
     if (g_title_screen_tex) {
         SDL_DestroyTexture(g_title_screen_tex);
         g_title_screen_tex = NULL;
@@ -1727,6 +1775,60 @@ static uint8_t display_title_palette_component_to_rgb(int component)
     if (component < 0) component = 0;
     if (component > 255) component = 255;
     return (uint8_t)component;
+}
+
+static void display_title_screen_upload_gl_texture(const uint32_t *argb)
+{
+    if (!argb || !g_gl_unpack_ok) return;
+    if (!g_gl_gen_textures || !g_gl_bind_texture || !g_gl_tex_image_2d ||
+        !g_gl_tex_parameteri2 || !g_gl_delete_textures) {
+        return;
+    }
+
+    size_t pixels = (size_t)DISPLAY_TITLE_W * (size_t)DISPLAY_TITLE_H;
+    uint8_t *rgba = (uint8_t *)malloc(pixels * 4u);
+    if (!rgba) return;
+
+    for (size_t i = 0; i < pixels; i++) {
+        uint32_t c = argb[i];
+        rgba[i * 4u + 0u] = (uint8_t)((c >> 16) & 255u);
+        rgba[i * 4u + 1u] = (uint8_t)((c >> 8) & 255u);
+        rgba[i * 4u + 2u] = (uint8_t)(c & 255u);
+        rgba[i * 4u + 3u] = (uint8_t)((c >> 24) & 255u);
+    }
+
+    if (g_title_screen_gl_tex)
+        g_gl_delete_textures(1, &g_title_screen_gl_tex);
+    g_title_screen_gl_tex = 0;
+
+    if (g_gl_get_error) {
+        for (int i = 0; i < 8 && g_gl_get_error() != 0; i++) {
+        }
+    }
+
+    g_gl_gen_textures(1, &g_title_screen_gl_tex);
+    if (g_title_screen_gl_tex) {
+        g_gl_active_texture(GL_TEXTURE0);
+        g_gl_bind_texture(DGL_TEXTURE_2D, g_title_screen_gl_tex);
+        g_gl_tex_parameteri2(DGL_TEXTURE_2D, DGL_TEXTURE_MAG_FILTER, (GLint)GL_NEAREST);
+        g_gl_tex_parameteri2(DGL_TEXTURE_2D, DGL_TEXTURE_MIN_FILTER, (GLint)GL_NEAREST);
+        g_gl_tex_parameteri2(DGL_TEXTURE_2D, DGL_TEXTURE_WRAP_S, (GLint)DGL_CLAMP_TO_EDGE);
+        g_gl_tex_parameteri2(DGL_TEXTURE_2D, DGL_TEXTURE_WRAP_T, (GLint)DGL_CLAMP_TO_EDGE);
+        display_gl_reset_rgba_texture_unpack(1);
+        g_gl_tex_image_2d(DGL_TEXTURE_2D, 0, (GLint)GL_RGBA8,
+                          DISPLAY_TITLE_W, DISPLAY_TITLE_H, 0,
+                          GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        display_gl_reset_rgba_texture_unpack(4);
+        g_gl_bind_texture(DGL_TEXTURE_2D, 0);
+    }
+
+    if (g_gl_get_error && g_gl_get_error() != 0) {
+        g_gl_delete_textures(1, &g_title_screen_gl_tex);
+        g_title_screen_gl_tex = 0;
+        printf("[DISPLAY] title screen: GL texture upload failed\n");
+    }
+
+    free(rgba);
 }
 
 static void display_title_screen_ensure_loaded(void)
@@ -1785,6 +1887,8 @@ static void display_title_screen_ensure_loaded(void)
         }
     }
 
+    display_title_screen_upload_gl_texture(argb);
+
     g_title_screen_tex = SDL_CreateTexture(g_sdl_ren, SDL_PIXELFORMAT_ARGB8888,
                                            SDL_TEXTUREACCESS_STATIC,
                                            DISPLAY_TITLE_W, DISPLAY_TITLE_H);
@@ -1824,7 +1928,6 @@ static void display_ascii_font_free(void)
     g_ascii_font_tex_w = 0;
     g_ascii_font_tex_h = 0;
     g_ascii_font_load_attempted = 0;
-    g_ascii_font_mipmap_ok = 0;
 }
 
 static void display_ascii_font_upload_array_texture(void)
@@ -1907,7 +2010,7 @@ static void display_ascii_font_upload_array_texture(void)
         return;
     }
     g_gl_bind_texture(DGL_TEXTURE_2D_ARRAY, g_ascii_font_array_tex);
-    g_gl_pixel_storei(GL_UNPACK_ALIGNMENT, 1);
+    display_gl_reset_rgba_texture_unpack(1);
     g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_MIN_FILTER,
                          (GLint)DGL_LINEAR_MIPMAP_LINEAR);
     g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_MAG_FILTER,
@@ -1923,7 +2026,7 @@ static void display_ascii_font_upload_array_texture(void)
                       DISPLAY_ASCII_COUNT, 0, GL_RGBA, GL_UNSIGNED_BYTE,
                       layers);
     g_gl_generate_mipmap(DGL_TEXTURE_2D_ARRAY);
-    g_gl_pixel_storei(GL_UNPACK_ALIGNMENT, 4);
+    display_gl_reset_rgba_texture_unpack(4);
     g_gl_bind_texture(DGL_TEXTURE_2D_ARRAY, 0);
 
     if (g_gl_get_error && g_gl_get_error() != 0) {
@@ -1948,27 +2051,8 @@ static void display_ascii_font_enable_scaling(void)
 #if SDL_VERSION_ATLEAST(2, 0, 12)
     SDL_SetTextureScaleMode(g_ascii_font_tex, SDL_ScaleModeNearest);
     display_ascii_font_upload_array_texture();
-
-    if (g_gl_unpack_ok && g_gl_hud_ok) {
-        if (!g_gl_generate_mipmap || !g_gl_tex_parameteri)
-            display_load_gl_mipmap_procs();
-        if (g_gl_generate_mipmap && g_gl_tex_parameteri) {
-            float tw = 0.0f, th = 0.0f;
-            if (SDL_GL_BindTexture(g_ascii_font_tex, &tw, &th) == 0) {
-                g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_MIN_FILTER,
-                                    (GLint)DGL_LINEAR_MIPMAP_LINEAR);
-                g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_MAG_FILTER,
-                                    (GLint)GL_NEAREST);
-                g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_WRAP_S,
-                                    (GLint)DGL_CLAMP_TO_EDGE);
-                g_gl_tex_parameteri(DGL_TEXTURE_2D, DGL_TEXTURE_WRAP_T,
-                                    (GLint)DGL_CLAMP_TO_EDGE);
-                g_gl_generate_mipmap(DGL_TEXTURE_2D);
-                SDL_GL_UnbindTexture(g_ascii_font_tex);
-                g_ascii_font_mipmap_ok = 1;
-            }
-        }
-    }
+    if (g_gl_unpack_ok && g_gl_hud_ok && g_ascii_font_array_ok)
+        return;
 #endif
 }
 
@@ -2077,8 +2161,10 @@ static void display_bitmap_text_span_abs(const char *text, int start, int len,
             dst.y = y;
             dst.w = draw_w;
             dst.h = draw_h;
-            if (!display_gl_font_glyph_blit(idx, &dst, alpha))
+            if (!display_gl_font_glyph_blit(idx, &dst, alpha) &&
+                !(g_gl_unpack_ok && g_gl_hud_ok)) {
                 display_overlay_copy(g_ascii_font_tex, &src, &dst);
+            }
         }
 
         pen_x += advance;
@@ -3571,7 +3657,7 @@ static void display_hud_digit_upload_array_texture(int kind)
         return;
     }
     g_gl_bind_texture(DGL_TEXTURE_2D_ARRAY, g_hud_digit_array_tex[kind]);
-    g_gl_pixel_storei(GL_UNPACK_ALIGNMENT, 1);
+    display_gl_reset_rgba_texture_unpack(1);
     g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_MIN_FILTER,
                          (GLint)DGL_LINEAR_MIPMAP_LINEAR);
     g_gl_tex_parameteri2(DGL_TEXTURE_2D_ARRAY, DGL_TEXTURE_MAG_FILTER,
@@ -3586,7 +3672,7 @@ static void display_hud_digit_upload_array_texture(int kind)
                       layer_w, layer_h, DISPLAY_HUD_DIGIT_COUNT, 0,
                       GL_RGBA, GL_UNSIGNED_BYTE, layers);
     g_gl_generate_mipmap(DGL_TEXTURE_2D_ARRAY);
-    g_gl_pixel_storei(GL_UNPACK_ALIGNMENT, 4);
+    display_gl_reset_rgba_texture_unpack(4);
     g_gl_bind_texture(DGL_TEXTURE_2D_ARRAY, 0);
 
     if (g_gl_get_error && g_gl_get_error() != 0) {
@@ -3832,8 +3918,10 @@ static void hud_draw_three_slot_value(int kind, SDL_Texture *tex, int tex_w, int
         dst.w = px1i - px0i;
         if (dst.w < 1) dst.w = 1;
         dst.h = sh;
-        if (!hud_digit_gl_blit(kind, d, &dst))
+        if (!hud_digit_gl_blit(kind, d, &dst) &&
+            !(g_gl_unpack_ok && g_gl_hud_ok)) {
             display_overlay_copy(tex, &src, &dst);
+        }
     }
 }
 
@@ -3896,8 +3984,10 @@ static void display_fps_overlay(const GameState *state)
         dst.w = px1i - px0i;
         if (dst.w < 1) dst.w = 1;
         dst.h = sh;
-        if (!hud_digit_gl_blit(1, d, &dst))
+        if (!hud_digit_gl_blit(1, d, &dst) &&
+            !(g_gl_unpack_ok && g_gl_hud_ok)) {
             display_overlay_copy(tex, &src, &dst);
+        }
     }
 }
 
@@ -4568,7 +4658,7 @@ void display_present_title_screen_alpha(int text_alpha, int dim_alpha)
     if (dim_alpha > 255) dim_alpha = 255;
 
     display_title_screen_ensure_loaded();
-    if (!g_title_screen_tex) {
+    if (!g_title_screen_tex && !g_title_screen_gl_tex) {
         display_present_text_screen_alpha(text_alpha);
         return;
     }
@@ -4599,7 +4689,7 @@ void display_present_title_screen_alpha(int text_alpha, int dim_alpha)
         title_dst = display_fit_rect(g_gl_overlay_win_w, g_gl_overlay_win_h,
                                      DISPLAY_TITLE_W, DISPLAY_TITLE_H);
         display_gl_overlay_begin();
-        display_overlay_copy(g_title_screen_tex, NULL, &title_dst);
+        display_gl_texture_id_blit(g_title_screen_gl_tex, &title_dst, 255);
         if (dim_alpha > 0)
             display_overlay_fill_rect_abs(&title_dst, 0, 0, 0, (Uint8)dim_alpha);
         display_text_screen_draw_in_rect((Uint8)text_alpha, title_dst);
