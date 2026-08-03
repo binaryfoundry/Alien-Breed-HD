@@ -57,7 +57,8 @@
 #define PLAYER_CLOSE_RESCUE_EXTRA_DIST 24
 #define PLAYER_CLOSE_RESCUE_MAX_CROSS_MUL 2
 #define FLAMETHROWER_CHARGE_MAX 10
-#define FLAMETHROWER_RECHARGE_DELAY_TICKS 25
+#define FLAMETHROWER_LOGIC_TICKS_PER_SECOND 50
+#define FLAMETHROWER_RECHARGE_DELAY_TICKS (3 * FLAMETHROWER_LOGIC_TICKS_PER_SECOND)
 #define FLAMETHROWER_RECHARGE_STEP_TICKS 5
 /* Amiga step-up: same scale as zone floor heights. game_data uses 40*256 for marines;
  * movement.c default is 40*256. Step-UP blocked when ledge is higher than this.
