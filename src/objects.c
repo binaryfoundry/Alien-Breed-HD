@@ -33,6 +33,11 @@
 #define HUGE_RED_MIN_PLAYER_DIST       224
 #define SMALL_RED_THING_MIN_PLAYER_DIST 160
 #define PLAYER_PAIN_NOISEVOL           800
+#define ENEMY_BURN_MIN_TICKS           (10 * 50)
+#define ENEMY_BURN_RANDOM_TICKS        (6 * 50)
+#define ENEMY_BURN_DAMAGE_TICKS        50
+#define ENEMY_BURN_PARTICLE_TICKS      7
+#define ENEMY_BURN_SCREAM_NOISEVOL     200
 
 /* Big-endian read/write helpers (Amiga data is big-endian) */
 static inline int16_t be16(const uint8_t *p) {
@@ -145,6 +150,9 @@ static void enemy_apply_step_limits(const GameObject *obj,
                                     MoveContext *ctx);
 static int obj_type_to_enemy_index(int8_t obj_type);
 static int object_floor_render_offset_units(const GameObject *obj, int8_t obj_type);
+static bool enemy_check_damage(GameObject *obj, const EnemyParams *params, GameState *state);
+static bool enemy_tick_burning(GameObject *obj, GameState *state, int obj_index,
+                               const EnemyParams *params);
 
 static void enemy_motion_sync_slots(const GameState *state)
 {
@@ -797,10 +805,11 @@ static void get_object_pos(const LevelState *level, int index,
     }
 }
 
-static GameObject *find_free_shot_slot(uint8_t *shots, int16_t *saved_cid)
+static GameObject *find_free_shot_slot_in_pool(uint8_t *shots, int shot_count,
+                                               int16_t *saved_cid)
 {
     if (!shots) return NULL;
-    for (int i = 0; i < PLAYER_SHOT_SLOT_COUNT; i++) {
+    for (int i = 0; i < shot_count; i++) {
         GameObject *candidate = (GameObject *)(shots + i * OBJECT_SIZE);
         if (OBJ_ZONE(candidate) < 0) {
             if (saved_cid) *saved_cid = OBJ_CID(candidate);
@@ -808,6 +817,11 @@ static GameObject *find_free_shot_slot(uint8_t *shots, int16_t *saved_cid)
         }
     }
     return NULL;
+}
+
+static GameObject *find_free_shot_slot(uint8_t *shots, int16_t *saved_cid)
+{
+    return find_free_shot_slot_in_pool(shots, PLAYER_SHOT_SLOT_COUNT, saved_cid);
 }
 
 /* Amiga Noisevol (sfx importance / channel mix) → PC mixer 0–255 (see SoundPlayer.s). */
@@ -960,10 +974,263 @@ static void enemy_death_marine_like(GameObject *obj, const EnemyParams *params,
     enemy_apply_death_outcome(obj, params, instant_kill);
 }
 
+static int enemy_index_from_object_ptr(const GameState *state, const GameObject *obj)
+{
+    ptrdiff_t diff;
+    int idx;
+
+    if (!state || !state->level.object_data || !obj)
+        return -1;
+
+    diff = (const uint8_t *)obj - state->level.object_data;
+    if (diff < 0 || (diff % OBJECT_SIZE) != 0)
+        return -1;
+
+    idx = (int)(diff / OBJECT_SIZE);
+    if (idx < 0 || idx >= MAX_OBJECTS)
+        return -1;
+    return idx;
+}
+
+static void enemy_clear_burning(GameState *state, int obj_index)
+{
+    if (!state || obj_index < 0 || obj_index >= MAX_OBJECTS)
+        return;
+
+    state->enemy_burn_time_left[obj_index] = 0;
+    state->enemy_burn_damage_accum[obj_index] = 0;
+    state->enemy_burn_particle_timer[obj_index] = 0;
+}
+
+static bool enemy_object_is_3d(const GameObject *obj)
+{
+    return obj && (uint8_t)obj->raw[6] == (uint8_t)OBJ_3D_SPRITE;
+}
+
+static bool enemy_can_burn_object(const GameObject *obj)
+{
+    return obj &&
+           obj_type_to_enemy_index(obj->obj.number) >= 0 &&
+           !enemy_object_is_3d(obj);
+}
+
+static bool enemy_is_burning_index(const GameState *state, int obj_index)
+{
+    return state &&
+           obj_index >= 0 && obj_index < MAX_OBJECTS &&
+           state->enemy_burn_time_left[obj_index] > 0;
+}
+
+static bool enemy_is_burning_object(const GameState *state, const GameObject *obj)
+{
+    return enemy_is_burning_index(state, enemy_index_from_object_ptr(state, obj));
+}
+
+static int8_t enemy_burn_raw_damage_for_one_life(const EnemyParams *params)
+{
+    int raw_damage = 1;
+    int shift = params ? params->damage_shift : 0;
+
+    if (shift < 0) shift = 0;
+    if (shift > 6) shift = 6;
+    raw_damage <<= shift;
+    if (raw_damage > 127) raw_damage = 127;
+    return (int8_t)raw_damage;
+}
+
+static int16_t enemy_burn_new_duration(void)
+{
+    return (int16_t)(ENEMY_BURN_MIN_TICKS +
+                     (rand() % (ENEMY_BURN_RANDOM_TICKS + 1)));
+}
+
+static void enemy_spawn_burn_flame_particle(GameObject *obj, GameState *state,
+                                            int obj_index)
+{
+    int16_t saved_cid = -1;
+    GameObject *part;
+    int16_t obj_x, obj_z;
+    int16_t obj_y;
+    int8_t obj_type;
+    int spread;
+    int height;
+    int world_w = 0;
+    int world_h = 0;
+    int16_t px, pz, py;
+    const BulletAnimFrame *f;
+
+    if (!obj || !state || !state->level.nasty_shot_data ||
+        !state->level.object_points)
+        return;
+    if (!bullet_anim_tables[AB3D_GUN_FLAMETHROWER])
+        return;
+    if (obj_index < 0 || obj_index >= MAX_OBJECTS)
+        return;
+
+    part = find_free_shot_slot_in_pool(state->level.nasty_shot_data,
+                                       NASTY_SHOT_SLOT_COUNT, &saved_cid);
+    if (!part || saved_cid < 0 ||
+        saved_cid >= state->level.num_object_points)
+        return;
+
+    get_object_pos(&state->level, (int)OBJ_CID(obj), &obj_x, &obj_z);
+    obj_type = obj->obj.number;
+    if (!enemy_object_is_3d(obj)) {
+        world_w = (int)(uint8_t)obj->raw[6];
+        world_h = (int)(uint8_t)obj->raw[7];
+    }
+    if (obj_type >= 0 && obj_type <= OBJ_NBR_GAS_PIPE) {
+        if (world_w == 0) world_w = (int)(uint8_t)default_object_world_size[obj_type].w;
+        if (world_h == 0) world_h = (int)(uint8_t)default_object_world_size[obj_type].h;
+        spread = col_box_table[obj_type].width;
+        if (world_w / 2 > spread) spread = world_w / 2;
+        height = col_box_table[obj_type].full_height;
+        if (world_h > height) height = world_h;
+    } else {
+        spread = (world_w > 0) ? world_w / 2 : 8;
+        height = (world_h > 0) ? world_h : 24;
+    }
+    if (spread < 4) spread = 4;
+    if (height < 12) height = 12;
+
+    obj_y = obj_w(obj->raw + 4);
+    px = (int16_t)(obj_x + ((rand() % (spread * 2 + 1)) - spread));
+    pz = (int16_t)(obj_z + ((rand() % (spread * 2 + 1)) - spread));
+    py = (int16_t)(obj_y + ((rand() % (height + 1)) - (height / 2)));
+
+    memset(part, 0, OBJECT_SIZE);
+    OBJ_SET_CID(part, saved_cid);
+    OBJ_SET_ZONE(part, OBJ_ZONE(obj));
+    part->obj.number = OBJ_NBR_BULLET;
+    part->obj.in_top = obj->obj.in_top;
+    part->obj.worry = 127;
+
+    SHOT_SIZE(*part) = AB3D_GUN_FLAMETHROWER;
+    SHOT_POWER(*part) = 0;
+    SHOT_STATUS(*part) = 0;
+    SHOT_ANIM(*part) = (uint8_t)(rand() % 6);
+    SHOT_SET_ANIM_ACCUM(*part, 0);
+    SHOT_SET_LIFE(*part, (int16_t)(rand() % 12));
+    SHOT_SET_ACCYPOS(*part, (int32_t)py << 7);
+    SHOT_SET_YVEL(*part, (int16_t)(-48 - (rand() % 48)));
+    SHOT_SET_GRAV(*part, 0);
+    SHOT_SET_FLAGS(*part, 0);
+    SHOT_SET_XVEL(*part, (int32_t)(((rand() & 3) - 1) << 16));
+    SHOT_SET_ZVEL(*part, (int32_t)(((rand() & 3) - 1) << 16));
+    NASTY_SET_EFLAGS(*part, 0);
+
+    f = &bullet_anim_tables[AB3D_GUN_FLAMETHROWER][SHOT_ANIM(*part)];
+    if (f->width < 0)
+        f = &bullet_anim_tables[AB3D_GUN_FLAMETHROWER][0];
+    part->raw[6] = (uint8_t)f->width;
+    part->raw[7] = (uint8_t)f->height;
+    obj_sw(part->raw + 8, f->vect_num);
+    obj_sw(part->raw + 10, f->frame_num);
+    part->raw[14] = bullet_fly_src_cols[AB3D_GUN_FLAMETHROWER];
+    part->raw[15] = bullet_fly_src_rows[AB3D_GUN_FLAMETHROWER];
+    obj_sw(part->raw + 4, py);
+
+    {
+        uint8_t *pt = state->level.object_points + (uint32_t)saved_cid * 8u;
+        obj_sl(pt, (int32_t)px << 16);
+        obj_sl(pt + 4, (int32_t)pz << 16);
+        if (state->level.prev_object_points) {
+            uint8_t *prev_pt =
+                state->level.prev_object_points + (uint32_t)saved_cid * 8u;
+            obj_sl(prev_pt, (int32_t)px << 16);
+            obj_sl(prev_pt + 4, (int32_t)pz << 16);
+        }
+    }
+}
+
+static void enemy_ignite_burning(GameObject *obj, GameState *state, int obj_index)
+{
+    int16_t duration;
+
+    if (!obj || !state || obj_index < 0 || obj_index >= MAX_OBJECTS)
+        return;
+    if (!enemy_can_burn_object(obj))
+        return;
+    if (NASTY_LIVES(*obj) <= 0)
+        return;
+
+    duration = enemy_burn_new_duration();
+    if (state->enemy_burn_time_left[obj_index] < duration)
+        state->enemy_burn_time_left[obj_index] = duration;
+    state->enemy_burn_damage_accum[obj_index] = 0;
+    if (state->enemy_burn_particle_timer[obj_index] <= 0)
+        state->enemy_burn_particle_timer[obj_index] = 1;
+    obj->obj.worry = 127;
+}
+
+static bool enemy_tick_burning(GameObject *obj, GameState *state, int obj_index,
+                               const EnemyParams *params)
+{
+    int16_t frames;
+    int32_t time_left;
+    int32_t damage_accum;
+    int32_t particle_timer;
+
+    if (!obj || !state || obj_index < 0 || obj_index >= MAX_OBJECTS || !params)
+        return false;
+    if (state->enemy_burn_time_left[obj_index] <= 0)
+        return false;
+
+    if (OBJ_ZONE(obj) < 0 || !enemy_can_burn_object(obj) ||
+        NASTY_LIVES(*obj) <= 0) {
+        enemy_clear_burning(state, obj_index);
+        return false;
+    }
+
+    frames = state->temp_frames;
+    if (frames < 1) frames = 1;
+    obj->obj.worry = 127;
+
+    time_left = (int32_t)state->enemy_burn_time_left[obj_index] - frames;
+    if (time_left <= 0) {
+        enemy_clear_burning(state, obj_index);
+        return false;
+    }
+    state->enemy_burn_time_left[obj_index] = (int16_t)time_left;
+
+    particle_timer = (int32_t)state->enemy_burn_particle_timer[obj_index] - frames;
+    if (particle_timer <= 0) {
+        enemy_spawn_burn_flame_particle(obj, state, obj_index);
+        particle_timer = ENEMY_BURN_PARTICLE_TICKS + (rand() & 3);
+    }
+    state->enemy_burn_particle_timer[obj_index] = (int16_t)particle_timer;
+
+    damage_accum = (int32_t)state->enemy_burn_damage_accum[obj_index] + frames;
+    while (damage_accum >= ENEMY_BURN_DAMAGE_TICKS) {
+        damage_accum -= ENEMY_BURN_DAMAGE_TICKS;
+        obj->raw[19] = damage_accumulate_u8(
+            obj->raw[19],
+            (int32_t)(uint8_t)enemy_burn_raw_damage_for_one_life(params));
+        if (enemy_check_damage(obj, params, state)) {
+            enemy_clear_burning(state, obj_index);
+            return true;
+        }
+        if (NASTY_LIVES(*obj) <= 0 || OBJ_ZONE(obj) < 0) {
+            enemy_clear_burning(state, obj_index);
+            return true;
+        }
+    }
+    state->enemy_burn_damage_accum[obj_index] = (int16_t)damage_accum;
+
+    if (params->scream_sound >= 0 && (rand() & 31) == 0) {
+        audio_play_sample(params->scream_sound,
+                          amiga_noisevol_to_pc(ENEMY_BURN_SCREAM_NOISEVOL));
+    }
+
+    return false;
+}
+
 /* Shared boss/mech outcome: turn the defeated enemy into the blue key pickup. */
 static void enemy_convert_to_blue_key(GameObject *obj, GameState *state)
 {
     if (!obj) return;
+
+    enemy_clear_burning(state, enemy_index_from_object_ptr(state, obj));
 
     NASTY_LIVES(*obj) = 0;
     NASTY_DAMAGE(*obj) = 0;
@@ -2048,6 +2315,15 @@ void objects_update(GameState *state)
         }
 
         int param_idx;
+        param_idx = obj_type_to_enemy_index(obj_type);
+        if (param_idx >= 0 && param_idx < num_enemy_types) {
+            if (enemy_tick_burning(obj, state, obj_index, &enemy_params[param_idx])) {
+                obj_index++;
+                continue;
+            }
+        } else {
+            enemy_clear_burning(state, obj_index);
+        }
 
         /* Match Amiga wake behavior: dormant enemies (worry==0) do not run AI. */
         if (object_type_uses_worry_gate(obj_type) && obj->obj.worry == 0) {
@@ -2284,8 +2560,9 @@ static void enemy_handle_big_red_variant(GameObject *obj, GameState *state, bool
     int16_t third_timer = OBJ_TD_W(obj, ENEMY_THIRD_TIMER_OFF);
     bool attacking = false;
     int target_player = 0;
+    bool burning = enemy_is_burning_object(state, obj);
 
-    if (can_see && third_timer <= 0) {
+    if (!burning && can_see && third_timer <= 0) {
         target_player = marine_pick_target_player(obj, state);
         attacking = (target_player != 0);
     }
@@ -2341,8 +2618,9 @@ void object_handle_alien(GameObject *obj, GameState *state)
     int16_t third_timer = OBJ_TD_W(obj, ENEMY_THIRD_TIMER_OFF);
     bool attacking = false;
     int target_player = 0;
+    bool burning = enemy_is_burning_object(state, obj);
 
-    if (can_see && third_timer <= 0) {
+    if (!burning && can_see && third_timer <= 0) {
         target_player = marine_pick_target_player(obj, state);
         attacking = (target_player != 0);
     }
@@ -2409,8 +2687,9 @@ void object_handle_robot(GameObject *obj, GameState *state)
     bool can_shootgun = false;
     bool fired_this_tick = false;
     int target_player = 0;
+    bool burning = enemy_is_burning_object(state, obj);
 
-    if (can_see && third_timer <= 0) {
+    if (!burning && can_see && third_timer <= 0) {
         target_player = marine_pick_target_player(obj, state);
         attacking = (target_player != 0);
     }
@@ -2513,8 +2792,9 @@ void object_handle_worm(GameObject *obj, GameState *state)
     int16_t third_timer = OBJ_TD_W(obj, ENEMY_THIRD_TIMER_OFF);
     bool attacking = false;
     int target_player = 0;
+    bool burning = enemy_is_burning_object(state, obj);
 
-    if (can_see && third_timer <= 0) {
+    if (!burning && can_see && third_timer <= 0) {
         target_player = marine_pick_target_player(obj, state);
         attacking = (target_player != 0);
     }
@@ -2993,6 +3273,9 @@ static void marine_hitscan_burst(GameObject *obj, GameState *state,
                                  int player_num, int pellets, int damage)
 {
     int16_t obj_x = 0, obj_z = 0;
+    if (enemy_is_burning_object(state, obj))
+        return;
+
     get_object_pos(&state->level, (int)OBJ_CID(obj), &obj_x, &obj_z);
 
     PlayerState *plr = (player_num == 1) ? &state->plr1 : &state->plr2;
@@ -3034,8 +3317,9 @@ void object_handle_marine(GameObject *obj, GameState *state)
     int16_t fourth_reset = (type == OBJ_NBR_FLAME_MARINE) ? 30 : 25;
     bool attacking = false;
     int target_player = 0;
+    bool burning = enemy_is_burning_object(state, obj);
 
-    if (can_see && third_timer <= 0) {
+    if (!burning && can_see && third_timer <= 0) {
         target_player = marine_pick_target_player(obj, state);
         attacking = (target_player != 0);
     }
@@ -3108,8 +3392,9 @@ void object_handle_big_nasty(GameObject *obj, GameState *state)
     int can_see = obj->obj.can_see & 0x03;
     bool attacking = false;
     int target_player = 0;
+    bool burning = enemy_is_burning_object(state, obj);
 
-    if (can_see && NASTY_TIMER(*obj) <= 0 && (rand() & 0xFF) <= 250) {
+    if (!burning && can_see && NASTY_TIMER(*obj) <= 0 && (rand() & 0xFF) <= 250) {
         target_player = marine_pick_target_player(obj, state);
         attacking = (target_player != 0);
     }
@@ -3187,8 +3472,9 @@ void object_handle_flying_nasty(GameObject *obj, GameState *state)
     bool attacking = false;
     bool fired_this_tick = false;
     int target_player = 0;
+    bool burning = enemy_is_burning_object(state, obj);
 
-    if (can_see && third_timer <= 0) {
+    if (!burning && can_see && third_timer <= 0) {
         target_player = marine_pick_target_player(obj, state);
         attacking = (target_player != 0);
     }
@@ -3285,8 +3571,9 @@ void object_handle_tree(GameObject *obj, GameState *state)
     bool attacking = false;
     bool fired_this_tick = false;
     int target_player = 0;
+    bool burning = enemy_is_burning_object(state, obj);
 
-    if (can_see && third_timer <= 0) {
+    if (!burning && can_see && third_timer <= 0) {
         target_player = marine_pick_target_player(obj, state);
         attacking = (target_player != 0);
     }
@@ -4244,13 +4531,24 @@ void object_handle_bullet(GameObject *obj, GameState *state)
         (shot_size >= 0 && shot_size < 8) ?
         object_shot_explosive_force(state, obj, shot_size) : 0;
     bool explosive_projectile_hit = hit_explosive_force > 0;
+    bool flame_hits_enemy =
+        shot_size == AB3D_GUN_FLAMETHROWER &&
+        best_hit_idx >= 0 &&
+        obj_type_to_enemy_index(best_target->obj.number) >= 0;
+    bool flame_ignites_enemy =
+        flame_hits_enemy && enemy_can_burn_object(best_target);
 
     /* HIT! Apply damage */
-    best_target->raw[19] = damage_accumulate_u8(best_target->raw[19],
-                                                (int32_t)(uint8_t)SHOT_POWER(*obj));
-    NASTY_SET_IMPACTX(best_target, SHOT_XVEL(*obj) >> 16);
-    NASTY_SET_IMPACTZ(best_target, SHOT_ZVEL(*obj) >> 16);
-    if (explosive_projectile_hit && best_hit_idx >= 0 && best_hit_idx < MAX_OBJECTS) {
+    if (flame_ignites_enemy) {
+        enemy_ignite_burning(best_target, state, best_hit_idx);
+    } else if (!flame_hits_enemy) {
+        best_target->raw[19] = damage_accumulate_u8(best_target->raw[19],
+                                                    (int32_t)(uint8_t)SHOT_POWER(*obj));
+        NASTY_SET_IMPACTX(best_target, SHOT_XVEL(*obj) >> 16);
+        NASTY_SET_IMPACTZ(best_target, SHOT_ZVEL(*obj) >> 16);
+    }
+    if (!flame_ignites_enemy &&
+        explosive_projectile_hit && best_hit_idx >= 0 && best_hit_idx < MAX_OBJECTS) {
         /* Direct rocket/grenade impacts should always count as explosion kills
          * even if the subsequent splash visibility test excludes the target. */
         explosion_damage_flag[best_hit_idx] = 1;
@@ -5050,6 +5348,7 @@ void enemy_fire_at_player(GameObject *obj, GameState *state,
                           int shot_speed, int shot_shift)
 {
     if (!state->level.nasty_shot_data) return;
+    if (enemy_is_burning_object(state, obj)) return;
 
     PlayerState *plr = (player_num == 1) ? &state->plr1 : &state->plr2;
 

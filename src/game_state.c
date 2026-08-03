@@ -31,6 +31,14 @@ static void game_state_reset_flamethrower_recharge(GameState *state)
     state->plr2_flamethrower_recharge_accum = 0;
 }
 
+void game_state_reset_enemy_burning(GameState *state)
+{
+    if (!state) return;
+    memset(state->enemy_burn_time_left, 0, sizeof(state->enemy_burn_time_left));
+    memset(state->enemy_burn_damage_accum, 0, sizeof(state->enemy_burn_damage_accum));
+    memset(state->enemy_burn_particle_timer, 0, sizeof(state->enemy_burn_particle_timer));
+}
+
 void game_state_init_player(PlayerState *plr)
 {
     memset(plr, 0, sizeof(*plr));
@@ -103,6 +111,7 @@ void game_state_init(GameState *state)
     state->cfg_marine_hitscan_projectiles = true;
     state->cfg_flamethrower_weapon = true;
     game_state_reset_flamethrower_recharge(state);
+    game_state_reset_enemy_burning(state);
 }
 
 /*
@@ -118,6 +127,7 @@ void game_state_setup_default(GameState *state)
     state->plr1_clumptime = 0;
     state->plr2_clumptime = 0;
     game_state_reset_flamethrower_recharge(state);
+    game_state_reset_enemy_burning(state);
     state->nasty = true;
     state->restart_game_requested = false;
 }
@@ -133,5 +143,6 @@ void game_state_setup_two_player(GameState *state)
     state->plr1_clumptime = 0;
     state->plr2_clumptime = 0;
     game_state_reset_flamethrower_recharge(state);
+    game_state_reset_enemy_burning(state);
     state->nasty = false;  /* no enemies in versus mode */
 }

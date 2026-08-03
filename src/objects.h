@@ -101,7 +101,9 @@ void calc_plr1_in_line(GameState *state);
 void calc_plr2_in_line(GameState *state);
 
 /* Object visibility arrays */
+#ifndef MAX_OBJECTS
 #define MAX_OBJECTS 250
+#endif
 extern int8_t  plr1_obs_in_line[MAX_OBJECTS];
 extern int8_t  plr2_obs_in_line[MAX_OBJECTS];
 extern int16_t plr1_obj_dists[MAX_OBJECTS];

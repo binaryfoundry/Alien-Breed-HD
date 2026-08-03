@@ -14,6 +14,7 @@
 
 #include "game_types.h"
 
+#define MAX_OBJECTS 250
 #define PLAYER_SHOT_SLOT_COUNT 20
 #define NASTY_SHOT_SLOT_COUNT  100
 
@@ -385,6 +386,9 @@ typedef struct {
     int16_t         plr1_flamethrower_recharge_accum;
     int16_t         plr2_flamethrower_recharge_delay;
     int16_t         plr2_flamethrower_recharge_accum;
+    int16_t         enemy_burn_time_left[MAX_OBJECTS];
+    int16_t         enemy_burn_damage_accum[MAX_OBJECTS];
+    int16_t         enemy_burn_particle_timer[MAX_OBJECTS];
 
 } GameState;
 
@@ -400,5 +404,6 @@ void game_state_init(GameState *state);
 void game_state_init_player(PlayerState *plr);
 void game_state_setup_default(GameState *state);
 void game_state_setup_two_player(GameState *state);
+void game_state_reset_enemy_burning(GameState *state);
 
 #endif /* GAME_STATE_H */

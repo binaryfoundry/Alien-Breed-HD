@@ -561,6 +561,7 @@ void play_the_game_prepare_level(GameState *state, bool *copper_screen_ready)
     /* ---- Init player positions from level header (skip when F9 will apply save after load) ---- */
     if (!state->f9_pending_apply_save) {
         player_init_from_level(state);
+        game_state_reset_enemy_burning(state);
     }
 
     state->num_explosions = 0;
