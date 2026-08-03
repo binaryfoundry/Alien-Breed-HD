@@ -1,19 +1,21 @@
 # Releasing
 
-Alien Breed 3D I releases are currently Windows-only beta builds produced by GitHub Actions.
+Alien Breed 3D I releases are Windows x64 builds produced by GitHub Actions.
 
-## Create a Beta Release
+## Create a Stable Release
 
-1. Update the numeric CMake project version in `CMakeLists.txt` when the underlying beta series changes.
+1. Update the numeric CMake project version in `CMakeLists.txt` when the release series changes.
 2. Commit the release-ready source.
-3. Create and push a beta tag:
+3. Create and push a stable tag:
 
 ```bash
-git tag v0.9.0-beta.1
-git push origin v0.9.0-beta.1
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
-Tags matching `v*.*.*-beta*` run `.github/workflows/release.yml`. The workflow builds a clean Windows x64 Release binary, packages the staged runtime files, creates `SHA256SUMS.txt`, creates GitHub artifact attestations where supported, and publishes a GitHub prerelease.
+Tags matching `v*.*.*` run `.github/workflows/release.yml`. The workflow builds a clean Windows x64 Release binary, packages the staged runtime files, creates `SHA256SUMS.txt`, creates GitHub artifact attestations where supported, and publishes a GitHub release.
+
+Tags with a prerelease suffix, such as `v1.0.0-beta.1` or `v1.0.0-rc.1`, use the same workflow but are marked as GitHub prereleases and are not marked latest.
 
 Release assets appear on the GitHub Release for the tag:
 
@@ -28,7 +30,7 @@ The bundled `VERIFY_RELEASE.md` explains how players can verify checksums and pr
 
 ## Optional Windows Code Signing
 
-Signing is not required for the beta release workflow. To enable it later, add these repository or environment secrets:
+Signing is not required for the release workflow. To enable it later, add these repository or environment secrets:
 
 - `WINDOWS_SIGNING_CERT_BASE64`: Base64-encoded `.pfx` signing certificate.
 - `WINDOWS_SIGNING_CERT_PASSWORD`: Password for the `.pfx` certificate.
@@ -37,4 +39,4 @@ When both secrets are present, the release workflow signs `build/Release/ab3d1.e
 
 ## Security Notes
 
-Release publishing only runs for tags in the `retro-foundry/Alien-Breed-HD` repository. The workflow uses the built-in `GITHUB_TOKEN` and grants write permissions only to the publish job. Keep beta tags protected in GitHub repository settings so only trusted maintainers can create or move release tags.
+Release publishing only runs for tags in the `retro-foundry/Alien-Breed-HD` repository. The workflow uses the built-in `GITHUB_TOKEN` and grants write permissions only to the publish job. Keep release tags protected in GitHub repository settings so only trusted maintainers can create or move release tags.

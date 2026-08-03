@@ -1,13 +1,13 @@
-name: Beta Release
+name: Release
 
 on:
   push:
     tags:
-      - "v*.*.*-beta*"
+      - "v*.*.*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing beta tag to package, for example v0.9.0-beta.1"
+        description: "Existing release tag to package, for example v1.0.0 or v1.0.0-beta.1"
         required: true
         type: string
 
@@ -40,11 +40,11 @@ jobs:
             "AB3D_RELEASE_VERSION=${{ github.ref_name }}" | Out-File -FilePath $env:GITHUB_ENV -Append
           }
 
-      - name: Validate beta tag
+      - name: Validate release tag
         shell: pwsh
         run: |
-          if ($env:AB3D_RELEASE_VERSION -notmatch '^v\d+\.\d+\.\d+-beta') {
-            throw "Release version must be a beta tag like v0.9.0-beta.1; got $env:AB3D_RELEASE_VERSION"
+          if ($env:AB3D_RELEASE_VERSION -notmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$') {
+            throw "Release version must be a tag like v1.0.0 or v1.0.0-beta.1; got $env:AB3D_RELEASE_VERSION"
           }
 
       - name: Set up Python
@@ -85,7 +85,7 @@ jobs:
           }
           & $signtool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $certPath /p $env:WINDOWS_SIGNING_CERT_PASSWORD "build\Release\ab3d1.exe"
 
-      - name: Package Windows beta
+      - name: Package Windows release
         shell: pwsh
         run: python tools/package_release.py --build-dir build --config Release --version "$env:AB3D_RELEASE_VERSION" --output-dir dist
 
@@ -102,7 +102,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish GitHub prerelease
+    name: Publish GitHub release
     needs: build-windows
     if: github.repository == 'retro-foundry/Alien-Breed-HD'
     runs-on: ubuntu-latest
@@ -127,13 +127,21 @@ jobs:
             echo "AB3D_RELEASE_VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
           fi
 
-      - name: Validate beta tag
+      - name: Validate release tag
         shell: bash
         run: |
-          case "$AB3D_RELEASE_VERSION" in
-            v[0-9]*.[0-9]*.[0-9]*-beta*) ;;
-            *) echo "Release version must be a beta tag like v0.9.0-beta.1; got $AB3D_RELEASE_VERSION" >&2; exit 1 ;;
-          esac
+          if [[ ! "$AB3D_RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Release version must be a tag like v1.0.0 or v1.0.0-beta.1; got $AB3D_RELEASE_VERSION" >&2
+            exit 1
+          fi
+
+          if [[ "$AB3D_RELEASE_VERSION" == *-* ]]; then
+            echo "AB3D_RELEASE_PRERELEASE=true" >> "$GITHUB_ENV"
+            echo "AB3D_RELEASE_MAKE_LATEST=false" >> "$GITHUB_ENV"
+          else
+            echo "AB3D_RELEASE_PRERELEASE=false" >> "$GITHUB_ENV"
+            echo "AB3D_RELEASE_MAKE_LATEST=true" >> "$GITHUB_ENV"
+          fi
 
       - name: Download package artifact
         uses: actions/download-artifact@v4
@@ -149,13 +157,13 @@ jobs:
         with:
           subject-path: "release-assets/SHA256SUMS.txt"
 
-      - name: Publish prerelease
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.AB3D_RELEASE_VERSION }}
-          name: Alien Breed 3D I ${{ env.AB3D_RELEASE_VERSION }} beta
-          prerelease: true
-          make_latest: false
+          name: Alien Breed 3D I ${{ env.AB3D_RELEASE_VERSION }}
+          prerelease: ${{ env.AB3D_RELEASE_PRERELEASE }}
+          make_latest: ${{ env.AB3D_RELEASE_MAKE_LATEST }}
           body_path: VERIFY_RELEASE.md
           files: |
             release-assets/*.zip
