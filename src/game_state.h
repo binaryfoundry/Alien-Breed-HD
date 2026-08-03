@@ -380,7 +380,11 @@ typedef struct {
     int16_t         plr2_clumptime;       /* PLR2_clumptime footstep accumulator */
     bool            cfg_footsteps_water_only; /* 1 = suppress non-water footstep samples */
     bool            cfg_marine_hitscan_projectiles; /* 1 = mutant marine hitscan attacks fire orange projectiles */
-    bool            cfg_flamethrower_weapon; /* 1 = add AB3DI.s PLR1_GunData gun 3 as key-6 weapon */
+    bool            cfg_flamethrower_weapon; /* 1 = add PC flamethrower gun 3 as key-6 weapon */
+    int16_t         plr1_flamethrower_recharge_delay;
+    int16_t         plr1_flamethrower_recharge_accum;
+    int16_t         plr2_flamethrower_recharge_delay;
+    int16_t         plr2_flamethrower_recharge_accum;
 
 } GameState;
 

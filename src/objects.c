@@ -3555,7 +3555,8 @@ static bool object_take_ammo_clip(GameObject *obj, const GameState *state,
 {
     if (!obj || !plr || !guns || gun_idx < 0 || gun_idx >= MAX_GUNS)
         return false;
-    if (state && !state->cfg_flamethrower_weapon && gun_idx == AB3D_GUN_FLAMETHROWER)
+    (void)state;
+    if (gun_idx == AB3D_GUN_FLAMETHROWER)
         return false;
     if (plr->gun_data[gun_idx].ammo >= AMMO_PICKUP_LIMIT)
         return false;

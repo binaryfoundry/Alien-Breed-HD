@@ -23,6 +23,14 @@ static void game_state_init_single_player_loadout(PlayerState *plr)
     plr->gun_selected = 0;
 }
 
+static void game_state_reset_flamethrower_recharge(GameState *state)
+{
+    state->plr1_flamethrower_recharge_delay = 0;
+    state->plr1_flamethrower_recharge_accum = 0;
+    state->plr2_flamethrower_recharge_delay = 0;
+    state->plr2_flamethrower_recharge_accum = 0;
+}
+
 void game_state_init_player(PlayerState *plr)
 {
     memset(plr, 0, sizeof(*plr));
@@ -94,6 +102,7 @@ void game_state_init(GameState *state)
     state->cfg_footsteps_water_only = false;
     state->cfg_marine_hitscan_projectiles = true;
     state->cfg_flamethrower_weapon = true;
+    game_state_reset_flamethrower_recharge(state);
 }
 
 /*
@@ -108,6 +117,7 @@ void game_state_setup_default(GameState *state)
     game_state_init_single_player_loadout(&state->plr2);
     state->plr1_clumptime = 0;
     state->plr2_clumptime = 0;
+    game_state_reset_flamethrower_recharge(state);
     state->nasty = true;
     state->restart_game_requested = false;
 }
@@ -122,5 +132,6 @@ void game_state_setup_two_player(GameState *state)
     game_state_init_player(&state->plr2);
     state->plr1_clumptime = 0;
     state->plr2_clumptime = 0;
+    game_state_reset_flamethrower_recharge(state);
     state->nasty = false;  /* no enemies in versus mode */
 }
