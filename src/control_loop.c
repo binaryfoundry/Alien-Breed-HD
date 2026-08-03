@@ -755,6 +755,7 @@ static void control_setup_new_game_state(GameState *state)
             state->plr2.gun_data[g].ammo = 999 * 8;
         }
     }
+    player_apply_weapon_config(state);
 
     /* New Game starts from the configured level after the title menu.
      * INI start_level=0 means level 1; 1..MAX_LEVELS are 1-based overrides. */

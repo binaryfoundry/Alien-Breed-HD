@@ -65,7 +65,14 @@ extern const GunDataEntry default_plr2_guns[8];
 /* Gun names for debugging */
 extern const char *gun_names[8];
 
-/* AB3D I gun index for the grenade launcher. TKG's launcher data is used only
+/* AB3D I gun indices used by optional PC-side config/control paths.
+ * Gun data itself is translated from AB3DI.s PLR1_GunData. */
+#define AB3D_GUN_PISTOL 0
+#define AB3D_GUN_PLASMA 1
+#define AB3D_GUN_ROCKET 2
+#define AB3D_GUN_FLAMETHROWER 3
+#define AB3D_GUN_SHOTGUN 7
+/* TKG's launcher data is used only
  * by the optional mouse-look shooting path; fixed-view AB3D I data stays as-is. */
 #define AB3D_GUN_GRENADE_LAUNCHER 4
 #define TKG_MOUSE_LOOK_GRENADE_DELAY 75

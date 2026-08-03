@@ -3549,10 +3549,13 @@ void object_handle_medikit(GameObject *obj, GameState *state)
     }
 }
 
-static bool object_take_ammo_clip(GameObject *obj, PlayerState *plr,
+static bool object_take_ammo_clip(GameObject *obj, const GameState *state,
+                                  PlayerState *plr,
                                   const GunDataEntry *guns, int gun_idx)
 {
     if (!obj || !plr || !guns || gun_idx < 0 || gun_idx >= MAX_GUNS)
+        return false;
+    if (state && !state->cfg_flamethrower_weapon && gun_idx == AB3D_GUN_FLAMETHROWER)
         return false;
     if (plr->gun_data[gun_idx].ammo >= AMMO_PICKUP_LIMIT)
         return false;
@@ -3582,13 +3585,13 @@ void object_handle_ammo(GameObject *obj, GameState *state)
 
     if (pickup_distance_check(obj, state, 1)) {
         if (ammo_type_valid) {
-            (void)object_take_ammo_clip(obj, &state->plr1, default_plr1_guns,
+            (void)object_take_ammo_clip(obj, state, &state->plr1, default_plr1_guns,
                                         (int)ammo_gun_type);
         }
     }
     if (state->mode != MODE_SINGLE && pickup_distance_check(obj, state, 2)) {
         if (ammo_type_valid) {
-            (void)object_take_ammo_clip(obj, &state->plr2, default_plr2_guns,
+            (void)object_take_ammo_clip(obj, state, &state->plr2, default_plr2_guns,
                                         (int)ammo_gun_type);
         }
     }
@@ -3622,19 +3625,37 @@ void object_handle_key(GameObject *obj, GameState *state)
  * ----------------------------------------------------------------------- */
 static bool object_big_gun_pickup_indices(uint8_t pickup_idx, int *gun_idx, int *ammo_idx)
 {
-    /* Amiga uses PLR*_GunData+32 as the base, so authored IDs 0..6 map to gun slots 1..7. */
-    if (pickup_idx >= (uint8_t)(MAX_GUNS - 1))
+    /* The AMOS level editor defines pickup art for these IDs only:
+     * 0 plasma, 1 rocket, 3 grenade, 6 shotgun. PC flamethrower stays on key 6
+     * as an extra config weapon and must not replace any authored pickup. */
+    static const int8_t pickup_to_gun[MAX_GUNS] = {
+        AB3D_GUN_PLASMA,
+        AB3D_GUN_ROCKET,
+        -1,
+        AB3D_GUN_GRENADE_LAUNCHER,
+        -1,
+        -1,
+        AB3D_GUN_SHOTGUN,
+        -1
+    };
+
+    if (pickup_idx >= MAX_GUNS)
         return false;
-    if (gun_idx) *gun_idx = (int)pickup_idx + 1;
+    if (pickup_to_gun[pickup_idx] < 0)
+        return false;
+    if (gun_idx) *gun_idx = (int)pickup_to_gun[pickup_idx];
     if (ammo_idx) *ammo_idx = (int)pickup_idx;
     return true;
 }
 
-static bool object_take_big_gun(GameObject *obj, PlayerState *plr, uint8_t pickup_idx)
+static bool object_take_big_gun(GameObject *obj, const GameState *state,
+                                PlayerState *plr, uint8_t pickup_idx)
 {
     int gun_idx = -1;
     int ammo_idx = -1;
     if (!obj || !plr || !object_big_gun_pickup_indices(pickup_idx, &gun_idx, &ammo_idx))
+        return false;
+    if (state && !state->cfg_flamethrower_weapon && gun_idx == AB3D_GUN_FLAMETHROWER)
         return false;
 
     plr->gun_data[gun_idx].visible = -1;
@@ -3648,10 +3669,10 @@ static bool object_take_big_gun(GameObject *obj, PlayerState *plr, uint8_t picku
 void object_handle_big_gun(GameObject *obj, GameState *state)
 {
     if (pickup_distance_check(obj, state, 1)) {
-        (void)object_take_big_gun(obj, &state->plr1, (uint8_t)obj->obj.can_see);
+        (void)object_take_big_gun(obj, state, &state->plr1, (uint8_t)obj->obj.can_see);
     }
     if (state->mode != MODE_SINGLE && pickup_distance_check(obj, state, 2)) {
-        (void)object_take_big_gun(obj, &state->plr2, (uint8_t)obj->obj.can_see);
+        (void)object_take_big_gun(obj, state, &state->plr2, (uint8_t)obj->obj.can_see);
     }
 }
 

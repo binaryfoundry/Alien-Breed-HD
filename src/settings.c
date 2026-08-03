@@ -428,6 +428,10 @@ static void apply_line(GameState *state, char *line)
         state->infinite_ammo = parse_bool(val) ? true : false;
     } else if (strcmp(key, "all_weapons") == 0) {
         state->cfg_all_weapons = parse_bool(val) ? true : false;
+    } else if (strcmp(key, "flamethrower_weapon") == 0 ||
+               strcmp(key, "flame_thrower_weapon") == 0 ||
+               strcmp(key, "flamethrower") == 0) {
+        state->cfg_flamethrower_weapon = parse_bool(val) ? true : false;
     } else if (strcmp(key, "all_keys") == 0) {
         state->cfg_all_keys = parse_bool(val) ? true : false;
     } else if (strcmp(key, "mouse_look") == 0) {
@@ -563,12 +567,13 @@ static void apply_runtime_constraints(GameState *state)
 static void log_effective_settings(const GameState *state, const char *source_label)
 {
     if (state->cfg_start_level >= 0) {
-        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d mouse_look=%d mouse_look_invert_y=%d gamepad_look_speed=%d quicksave_load=%d marine_hitscan_projectiles=%d run_default=%d footsteps_water_only=%d crosshair=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d audio_buffer_samples=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d weapon_draw=%d post_tint=%d weapon_post_gl=%d show_fps=%d\n",
+        printf("[SETTINGS] %s: start_level=%d infinite_health=%d infinite_ammo=%d all_weapons=%d flamethrower_weapon=%d all_keys=%d mouse_look=%d mouse_look_invert_y=%d gamepad_look_speed=%d quicksave_load=%d marine_hitscan_projectiles=%d run_default=%d footsteps_water_only=%d crosshair=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d audio_buffer_samples=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d weapon_draw=%d post_tint=%d weapon_post_gl=%d show_fps=%d\n",
                source_label,
                (int)state->cfg_start_level + 1,
                state->infinite_health ? 1 : 0,
                state->infinite_ammo ? 1 : 0,
                state->cfg_all_weapons ? 1 : 0,
+               state->cfg_flamethrower_weapon ? 1 : 0,
                state->cfg_all_keys ? 1 : 0,
                state->cfg_mouse_look ? 1 : 0,
                state->cfg_mouse_look_invert_y ? 1 : 0,
@@ -593,11 +598,12 @@ static void log_effective_settings(const GameState *state, const char *source_la
                state->cfg_weapon_post_gl ? 1 : 0,
                state->cfg_show_fps ? 1 : 0);
     } else {
-         printf("[SETTINGS] %s: start_level=0 infinite_health=%d infinite_ammo=%d all_weapons=%d all_keys=%d mouse_look=%d mouse_look_invert_y=%d gamepad_look_speed=%d quicksave_load=%d marine_hitscan_projectiles=%d run_default=%d footsteps_water_only=%d crosshair=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d audio_buffer_samples=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d weapon_draw=%d post_tint=%d weapon_post_gl=%d show_fps=%d\n",
+         printf("[SETTINGS] %s: start_level=0 infinite_health=%d infinite_ammo=%d all_weapons=%d flamethrower_weapon=%d all_keys=%d mouse_look=%d mouse_look_invert_y=%d gamepad_look_speed=%d quicksave_load=%d marine_hitscan_projectiles=%d run_default=%d footsteps_water_only=%d crosshair=%d display_mode=%s render=%dx%d supersampling=%d render_threads=%d render_threads_max=%d volume=%d audio_buffer_samples=%d y_proj_scale=%d billboard_sprite_rendering_enhancement=%d weapon_draw=%d post_tint=%d weapon_post_gl=%d show_fps=%d\n",
                source_label,
                state->infinite_health ? 1 : 0,
                state->infinite_ammo ? 1 : 0,
                state->cfg_all_weapons ? 1 : 0,
+               state->cfg_flamethrower_weapon ? 1 : 0,
                state->cfg_all_keys ? 1 : 0,
                state->cfg_mouse_look ? 1 : 0,
                state->cfg_mouse_look_invert_y ? 1 : 0,

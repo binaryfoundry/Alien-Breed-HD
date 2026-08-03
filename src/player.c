@@ -65,9 +65,18 @@
 #define INSTANT_TRACE_MAX_ITERS 1024
 /* PlayerShoot.s applies projectile bulyspd clamping in PLR1FIREBULLET. */
 
-/* Gun selection key -> gun index mapping (from GUNVALS in Plr1Control.s):
- * key1 pistol, key2 shotgun, key3 plasma, key4 grenade, key5 rocket, key6 flamethrower. */
-static const int8_t gun_key_map[6] = { 0, 7, 1, 4, 2, 3 };
+/* Gun selection key -> gun index mapping.
+ * Plr1Control.s GUNVALS has the original five slots:
+ * key1 pistol, key2 shotgun, key3 plasma, key4 grenade, key5 rocket.
+ * The PC flamethrower option appends gun 3 on key6 without replacing them. */
+static const int8_t gun_key_map[6] = {
+    AB3D_GUN_PISTOL,
+    AB3D_GUN_SHOTGUN,
+    AB3D_GUN_PLASMA,
+    AB3D_GUN_GRENADE_LAUNCHER,
+    AB3D_GUN_ROCKET,
+    AB3D_GUN_FLAMETHROWER,
+};
 #define GUN_KEY_COUNT ((int)(sizeof(gun_key_map) / sizeof(gun_key_map[0])))
 
 static int16_t player_current_mouse_aim_speed(const GameState *state, int plr_num);
@@ -167,6 +176,45 @@ static void player_ensure_valid_weapon_selection(PlayerState *plr)
             return;
         }
     }
+}
+
+static void player_disable_weapon(PlayerState *plr, int gun_idx)
+{
+    if (!plr || gun_idx < 0 || gun_idx >= MAX_GUNS) return;
+
+    plr->gun_data[gun_idx].visible = 0;
+    plr->gun_data[gun_idx].ammo = 0;
+    if (plr->gun_selected == gun_idx) {
+        plr->gun_selected = 0;
+        player_ensure_valid_weapon_selection(plr);
+    }
+}
+
+static void player_enable_flamethrower(PlayerState *plr)
+{
+    if (!plr) return;
+
+    if (plr->gun_data[AB3D_GUN_FLAMETHROWER].visible == 0) {
+        plr->gun_data[AB3D_GUN_FLAMETHROWER].visible = -1;
+        if (plr->gun_data[AB3D_GUN_FLAMETHROWER].ammo <= 0) {
+            plr->gun_data[AB3D_GUN_FLAMETHROWER].ammo =
+                default_plr1_guns[AB3D_GUN_FLAMETHROWER].ammo_left;
+        }
+    }
+}
+
+void player_apply_weapon_config(GameState *state)
+{
+    if (!state) return;
+
+    if (state->cfg_flamethrower_weapon) {
+        player_enable_flamethrower(&state->plr1);
+        player_enable_flamethrower(&state->plr2);
+        return;
+    }
+
+    player_disable_weapon(&state->plr1, AB3D_GUN_FLAMETHROWER);
+    player_disable_weapon(&state->plr2, AB3D_GUN_FLAMETHROWER);
 }
 
 static void player_cycle_weapon(PlayerState *plr, int direction)
@@ -2498,6 +2546,7 @@ static bool player_apply_pending_full_save_after_level_load(GameState *state)
     bool    ini_infinite_health = state->infinite_health;
     bool    ini_infinite_ammo = state->infinite_ammo;
     bool    ini_cfg_all_weapons = state->cfg_all_weapons;
+    bool    ini_cfg_flamethrower_weapon = state->cfg_flamethrower_weapon;
     bool    ini_cfg_all_keys = state->cfg_all_keys;
     bool    ini_cfg_mouse_look = state->cfg_mouse_look;
     bool    ini_cfg_mouse_look_invert_y = state->cfg_mouse_look_invert_y;
@@ -2529,6 +2578,7 @@ static bool player_apply_pending_full_save_after_level_load(GameState *state)
     state->infinite_health = ini_infinite_health;
     state->infinite_ammo = ini_infinite_ammo;
     state->cfg_all_weapons = ini_cfg_all_weapons;
+    state->cfg_flamethrower_weapon = ini_cfg_flamethrower_weapon;
     state->cfg_all_keys = ini_cfg_all_keys;
     state->cfg_mouse_look = ini_cfg_mouse_look;
     state->cfg_mouse_look_invert_y = ini_cfg_mouse_look_invert_y;
@@ -2552,6 +2602,7 @@ static bool player_apply_pending_full_save_after_level_load(GameState *state)
     state->cfg_weapon_post_gl = ini_cfg_weapon_post_gl;
     state->cfg_show_fps = ini_cfg_show_fps;
     player_sync_mouse_look_aim_after_load(state, hdr->version < 6u);
+    player_apply_weapon_config(state);
 
     door_data_dst = player_save_table_size_with_sentinel(state->level.door_data, 22u);
     switch_data_dst = player_save_table_size_with_sentinel(state->level.switch_data, 14u);
@@ -3075,6 +3126,7 @@ void player_apply_save_payload_after_level_load(GameState *state)
     state->plr2.s_angpos = state->plr2.angpos;
     player_sync_loaded_player(state, &state->plr1, 1);
     player_sync_loaded_player(state, &state->plr2, 2);
+    player_apply_weapon_config(state);
     /* View/collision use angpos + sin/cos; first frame may render before player_control */
     player_seed_facing_and_snapshots(state);
 }

@@ -30,6 +30,9 @@ void player_init_from_level(GameState *state);
 /* Clear modern mouse-look view/aim state when mouse look is disabled. */
 void player_clear_mouse_look_aim_state(GameState *state);
 
+/* Apply ab3d.ini weapon availability toggles to player inventory. */
+void player_apply_weapon_config(GameState *state);
+
 /* Shooting (from PlayerShoot.s) */
 void player1_shoot(GameState *state);
 void player2_shoot(GameState *state);

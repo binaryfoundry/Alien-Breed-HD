@@ -26,6 +26,11 @@ quicksave_load=0
 # 1 = start with every weapon unlocked and full ammo (both players).
 all_weapons=0
 
+# 1 = add the flamethrower as an extra weapon on key 6.
+# 0 = disable the flamethrower even if all_weapons or a save grants it.
+# Aliases: flame_thrower_weapon, flamethrower.
+flamethrower_weapon=1
+
 # 1 = treat every key in the level as collected (door/lift condition bits only; switches unchanged).
 all_keys=0
 
