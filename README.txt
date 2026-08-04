@@ -27,9 +27,14 @@ GAMEPAD (MODERN FPS LAYOUT)
 - Left Bumper / Right Bumper: Previous / next weapon
 - Left Stick Click (or full stick tilt): Run
 - Right Stick Click or Y: Look behind
-- Start: Pause
+- Start: Open the in-game menu
 - Back: Toggle automap
 - D-pad Up / Down: Automap zoom in / out
+
+MENU
+- D-pad or Left Stick: Move selection
+- A or Start: Select
+- B or Back: Back / close menu
 
 WEAPONS
 - 1-6 (or Numpad 1-6): Select weapon

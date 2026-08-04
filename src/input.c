@@ -52,6 +52,7 @@
 #define PAD_TRIGGER_DEADZONE        6000
 #define PAD_TRIGGER_FIRE_THRESHOLD  12000
 #define PAD_TRIGGER_USE_THRESHOLD   12000
+#define PAD_MENU_AXIS_DEADZONE      14000
 
 /* -----------------------------------------------------------------------
  * SDL scancode -> Amiga rawkey mapping
@@ -154,6 +155,13 @@ static int input_axis_to_mouse_delta(int16_t axis, int speed_percent)
     return delta;
 }
 
+static int input_axis_to_menu_dir(int16_t axis)
+{
+    if (axis <= -PAD_MENU_AXIS_DEADZONE) return -1;
+    if (axis >= PAD_MENU_AXIS_DEADZONE) return 1;
+    return 0;
+}
+
 /* -----------------------------------------------------------------------
  * Mouse state
  * ----------------------------------------------------------------------- */
@@ -185,6 +193,15 @@ static uint8_t g_gamepad_duck_toggle_queue = 0;
 static int16_t g_gamepad_weapon_cycle_steps = 0;
 static int16_t g_gamepad_mouse_dx = 0;
 static int16_t g_gamepad_mouse_dy = 0;
+static int8_t g_gamepad_menu_axis_x = 0;
+static int8_t g_gamepad_menu_axis_y = 0;
+
+static void input_queue_key_press(uint8_t keycode, uint8_t *last_pressed)
+{
+    if (keycode >= 128) return;
+    g_keyboard_pressed[keycode] = 1;
+    if (last_pressed) *last_pressed = keycode;
+}
 
 /* True after we successfully enable relative mode (click-to-play). The browser may
  * exit pointer lock before SDL_KEYDOWN(Escape) is delivered, so SDL_GetRelativeMouseMode()
@@ -261,6 +278,8 @@ static void input_close_gamepad(void)
     g_gamepad_weapon_cycle_steps = 0;
     g_gamepad_mouse_dx = 0;
     g_gamepad_mouse_dy = 0;
+    g_gamepad_menu_axis_x = 0;
+    g_gamepad_menu_axis_y = 0;
 }
 
 static void input_try_open_gamepad(int device_index)
@@ -315,8 +334,9 @@ static void input_update_gamepad(uint8_t *last_pressed)
     bool fire_held;
     bool use_held;
     bool look_behind_held;
-
-    (void)last_pressed;
+    bool menu_active;
+    int menu_x;
+    int menu_y;
 
     memset(g_gamepad_keys, 0, sizeof(g_gamepad_keys));
     memset(&g_joy1, 0, sizeof(g_joy1));
@@ -325,6 +345,7 @@ static void input_update_gamepad(uint8_t *last_pressed)
     g_gamepad_mouse_dx = 0;
     g_gamepad_mouse_dy = 0;
     if (!g_gamepad) return;
+    menu_active = g_menu_mouse_active;
 
     lx = input_axis_with_deadzone(
         SDL_GameControllerGetAxis(g_gamepad, SDL_CONTROLLER_AXIS_LEFTX),
@@ -344,6 +365,56 @@ static void input_update_gamepad(uint8_t *last_pressed)
     rt = input_axis_with_deadzone(
         SDL_GameControllerGetAxis(g_gamepad, SDL_CONTROLLER_AXIS_TRIGGERRIGHT),
         PAD_TRIGGER_DEADZONE);
+
+    for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; b++) {
+        buttons[b] = (uint8_t)SDL_GameControllerGetButton(g_gamepad, (SDL_GameControllerButton)b);
+    }
+
+    if (menu_active) {
+        menu_x = input_axis_to_menu_dir(lx);
+        menu_y = input_axis_to_menu_dir(ly);
+
+        if ((buttons[SDL_CONTROLLER_BUTTON_DPAD_UP] &&
+             !g_gamepad_prev_buttons[SDL_CONTROLLER_BUTTON_DPAD_UP]) ||
+            (menu_y < 0 && g_gamepad_menu_axis_y >= 0)) {
+            input_queue_key_press(AMIGA_KEY_UP, last_pressed);
+        }
+        if ((buttons[SDL_CONTROLLER_BUTTON_DPAD_DOWN] &&
+             !g_gamepad_prev_buttons[SDL_CONTROLLER_BUTTON_DPAD_DOWN]) ||
+            (menu_y > 0 && g_gamepad_menu_axis_y <= 0)) {
+            input_queue_key_press(AMIGA_KEY_DOWN, last_pressed);
+        }
+        if ((buttons[SDL_CONTROLLER_BUTTON_DPAD_LEFT] &&
+             !g_gamepad_prev_buttons[SDL_CONTROLLER_BUTTON_DPAD_LEFT]) ||
+            (menu_x < 0 && g_gamepad_menu_axis_x >= 0)) {
+            input_queue_key_press(AMIGA_KEY_LEFT, last_pressed);
+        }
+        if ((buttons[SDL_CONTROLLER_BUTTON_DPAD_RIGHT] &&
+             !g_gamepad_prev_buttons[SDL_CONTROLLER_BUTTON_DPAD_RIGHT]) ||
+            (menu_x > 0 && g_gamepad_menu_axis_x <= 0)) {
+            input_queue_key_press(AMIGA_KEY_RIGHT, last_pressed);
+        }
+        if ((buttons[SDL_CONTROLLER_BUTTON_A] &&
+             !g_gamepad_prev_buttons[SDL_CONTROLLER_BUTTON_A]) ||
+            (buttons[SDL_CONTROLLER_BUTTON_START] &&
+             !g_gamepad_prev_buttons[SDL_CONTROLLER_BUTTON_START])) {
+            input_queue_key_press(AMIGA_KEY_SPACE, last_pressed);
+        }
+        if ((buttons[SDL_CONTROLLER_BUTTON_B] &&
+             !g_gamepad_prev_buttons[SDL_CONTROLLER_BUTTON_B]) ||
+            (buttons[SDL_CONTROLLER_BUTTON_BACK] &&
+             !g_gamepad_prev_buttons[SDL_CONTROLLER_BUTTON_BACK])) {
+            input_queue_key_press(AMIGA_KEY_ESC, last_pressed);
+        }
+
+        g_gamepad_menu_axis_x = (int8_t)menu_x;
+        g_gamepad_menu_axis_y = (int8_t)menu_y;
+        memcpy(g_gamepad_prev_buttons, buttons, sizeof(g_gamepad_prev_buttons));
+        return;
+    }
+
+    g_gamepad_menu_axis_x = 0;
+    g_gamepad_menu_axis_y = 0;
 
     g_joy1.dx = (int16_t)(lx / 256);
     g_joy1.dy = (int16_t)(ly / 256);
@@ -371,10 +442,6 @@ static void input_update_gamepad(uint8_t *last_pressed)
                        (SDL_GameControllerGetButton(g_gamepad, SDL_CONTROLLER_BUTTON_Y) != 0);
     if (look_behind_held) input_set_key_state(g_gamepad_keys, AMIGA_KEY_L, true);
 
-    if (SDL_GameControllerGetButton(g_gamepad, SDL_CONTROLLER_BUTTON_START)) {
-        input_set_key_state(g_gamepad_keys, AMIGA_KEY_P, true);
-    }
-
     g_gamepad_mouse_dx =
         (int16_t)input_axis_to_mouse_delta(rx, g_state.cfg_gamepad_look_speed);
     if (g_state.cfg_mouse_look) {
@@ -382,11 +449,11 @@ static void input_update_gamepad(uint8_t *last_pressed)
             (int16_t)input_axis_to_mouse_delta(ry, g_state.cfg_gamepad_look_speed);
     }
 
-    for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; b++) {
-        buttons[b] = (uint8_t)SDL_GameControllerGetButton(g_gamepad, (SDL_GameControllerButton)b);
-    }
-
     /* Edge-triggered actions */
+    if (buttons[SDL_CONTROLLER_BUTTON_START] &&
+        !g_gamepad_prev_buttons[SDL_CONTROLLER_BUTTON_START]) {
+        input_queue_key_press(AMIGA_KEY_ESC, last_pressed);
+    }
     if (buttons[SDL_CONTROLLER_BUTTON_B] && !g_gamepad_prev_buttons[SDL_CONTROLLER_BUTTON_B]) {
         if (g_gamepad_duck_toggle_queue < 255) g_gamepad_duck_toggle_queue++;
     }
@@ -466,9 +533,24 @@ void input_set_menu_mouse_active(bool active, uint8_t *key_map)
         g_menu_mouse.y = y;
         g_menu_mouse.valid = true;
         g_menu_mouse_active = true;
+        if (g_gamepad) {
+            g_gamepad_menu_axis_x = (int8_t)input_axis_to_menu_dir(
+                input_axis_with_deadzone(
+                    SDL_GameControllerGetAxis(g_gamepad, SDL_CONTROLLER_AXIS_LEFTX),
+                    PAD_MOVE_DEADZONE));
+            g_gamepad_menu_axis_y = (int8_t)input_axis_to_menu_dir(
+                input_axis_with_deadzone(
+                    SDL_GameControllerGetAxis(g_gamepad, SDL_CONTROLLER_AXIS_LEFTY),
+                    PAD_MOVE_DEADZONE));
+        } else {
+            g_gamepad_menu_axis_x = 0;
+            g_gamepad_menu_axis_y = 0;
+        }
     } else {
         g_menu_mouse.valid = false;
         g_menu_mouse_active = false;
+        g_gamepad_menu_axis_x = 0;
+        g_gamepad_menu_axis_y = 0;
     }
 }
 
@@ -488,6 +570,8 @@ void input_init(void)
     g_gamepad_weapon_cycle_steps = 0;
     g_gamepad_mouse_dx = 0;
     g_gamepad_mouse_dy = 0;
+    g_gamepad_menu_axis_x = 0;
+    g_gamepad_menu_axis_y = 0;
     g_quit_requested = false;
     g_f7_spill_visualize_requested = false;
     g_f2_pick_log_requested = false;
