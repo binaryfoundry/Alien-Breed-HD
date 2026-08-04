@@ -60,6 +60,12 @@
 #define FLAMETHROWER_LOGIC_TICKS_PER_SECOND 50
 #define FLAMETHROWER_RECHARGE_DELAY_TICKS (3 * FLAMETHROWER_LOGIC_TICKS_PER_SECOND)
 #define FLAMETHROWER_RECHARGE_STEP_TICKS 5
+#define GAMEPAD_AIM_ASSIST_REGION_X_BASE_PX 56
+#define GAMEPAD_AIM_ASSIST_REGION_X_MIN_PX 32
+#define GAMEPAD_AIM_ASSIST_REGION_X_MAX_PX 112
+#define GAMEPAD_AIM_ASSIST_REGION_Y_BASE_PX 96
+#define GAMEPAD_AIM_ASSIST_REGION_Y_MIN_PX 48
+#define GAMEPAD_AIM_ASSIST_REGION_Y_MAX_PX 160
 /* Amiga step-up: same scale as zone floor heights. game_data uses 40*256 for marines;
  * movement.c default is 40*256. Step-UP blocked when ledge is higher than this.
  * Step-DOWN always passable (unlimited). */
@@ -567,7 +573,8 @@ static int32_t player_instant_y_spread_from_rand(int32_t rand_val)
 static void spawn_instant_hit_effect(GameState *state, const PlayerState *plr, int gun_idx,
                                      GameObject *target, int8_t shot_power,
                                      int plr_num, int32_t doubled_dist,
-                                     int16_t dir_x, int16_t dir_z)
+                                     int16_t dir_x, int16_t dir_z,
+                                     bool use_mouse_look_ray_impact)
 {
     if (!state || !plr || !target) return;
     if (gun_idx < 0 || gun_idx >= MAX_BULLET_ANIM_IDX) return;
@@ -585,7 +592,7 @@ static void spawn_instant_hit_effect(GameState *state, const PlayerState *plr, i
         saved_cid < state->level.num_object_points) {
         int16_t target_cid = OBJ_CID(target);
         uint8_t *dst = state->level.object_points + (uint32_t)(uint16_t)saved_cid * 8u;
-        if (state->cfg_mouse_look && doubled_dist > 0) {
+        if (use_mouse_look_ray_impact && doubled_dist > 0) {
             int16_t origin_x = (int16_t)(plr->xoff >> 16);
             int16_t origin_z = (int16_t)(plr->zoff >> 16);
             obj_sw(dst, player_mouse_look_ray_axis_at_dist(origin_x, dir_x, doubled_dist));
@@ -599,7 +606,7 @@ static void spawn_instant_hit_effect(GameState *state, const PlayerState *plr, i
 
     {
         int32_t impact_y = ((int32_t)obj_w(target->raw + 4)) << 7;
-        if (state->cfg_mouse_look && doubled_dist > 0) {
+        if (use_mouse_look_ray_impact && doubled_dist > 0) {
             int16_t aim_speed = player_current_mouse_aim_speed(state, plr_num);
             impact_y = plr->yoff + player_mouse_look_ray_y_delta_at_dist(aim_speed, doubled_dist);
         }
@@ -1116,6 +1123,66 @@ static int32_t player_current_proj_y_scale(const GameState *state)
         if (proj_y_scale < 1) proj_y_scale = 1;
     }
     return proj_y_scale;
+}
+
+static int player_proj_clamp_base_width(int w)
+{
+    if (w < 96) w = 96;
+    if (w > RENDER_INTERNAL_MAX_DIM) w = RENDER_INTERNAL_MAX_DIM;
+    return w;
+}
+
+static int player_proj_effective_base_width_from_state(const GameState *state)
+{
+    int w = state ? (int)state->cfg_render_width : RENDER_DEFAULT_WIDTH;
+    int h = state ? (int)state->cfg_render_height : RENDER_DEFAULT_HEIGHT;
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    {
+        int64_t scaled = ((int64_t)w * (int64_t)RENDER_DEFAULT_HEIGHT +
+                          (int64_t)h / 2) / (int64_t)h;
+        if (scaled < 1) scaled = 1;
+        if (scaled > INT_MAX) scaled = INT_MAX;
+        w = (int)scaled;
+    }
+    return player_proj_clamp_base_width(w);
+}
+
+static int32_t player_current_proj_x_scale(const GameState *state)
+{
+    int base_w = player_proj_effective_base_width_from_state(state);
+    int cur_w = renderer_get_width();
+    int64_t scale;
+    if (cur_w < 1) cur_w = base_w;
+    scale = ((int64_t)RENDER_SCALE * (int64_t)cur_w +
+             (int64_t)base_w / 2) / (int64_t)base_w;
+    if (scale < 1) scale = 1;
+    if (scale > INT_MAX) scale = INT_MAX;
+    return (int32_t)scale;
+}
+
+static int player_view_center_y_from_look(const GameState *state,
+                                          const PlayerState *plr,
+                                          int h)
+{
+    int16_t look_y = (state && state->cfg_mouse_look && plr) ? plr->p_look_y : 0;
+    int64_t scaled = (int64_t)look_y * (int64_t)h;
+    int look_px = (int)((scaled >= 0)
+        ? ((scaled + RENDER_DEFAULT_HEIGHT / 2) / RENDER_DEFAULT_HEIGHT)
+        : ((scaled - RENDER_DEFAULT_HEIGHT / 2) / RENDER_DEFAULT_HEIGHT));
+    int center_y = h / 2 - look_px;
+    if (center_y < 0) center_y = 0;
+    if (center_y > h) center_y = h;
+    return center_y;
+}
+
+static int player_scale_gamepad_aim_region_px(int h, int base_px,
+                                              int min_px, int max_px)
+{
+    int px = (base_px * h + RENDER_DEFAULT_HEIGHT / 2) / RENDER_DEFAULT_HEIGHT;
+    if (px < min_px) px = min_px;
+    if (px > max_px) px = max_px;
+    return px;
 }
 
 static int16_t player_mouse_aim_speed_from_look(const GameState *state, int16_t look_y)
@@ -3573,6 +3640,90 @@ static bool player_mouse_look_target_in_vertical_aim(const GameState *state,
            ray_y <= (target_center_y + target_half_y);
 }
 
+static bool player_gamepad_target_in_crosshair_region(const GameState *state,
+                                                      const PlayerState *plr,
+                                                      int obj_type,
+                                                      int16_t obj_cid,
+                                                      int32_t target_ydiff)
+{
+    if (!state || !plr || !state->cfg_mouse_look) return false;
+    if (!state->level.object_points) return false;
+    if (obj_cid < 0 || obj_cid >= state->level.num_object_points) return false;
+
+    int w = renderer_get_width();
+    int h = renderer_get_height();
+    if (w < 1) w = RENDER_DEFAULT_WIDTH;
+    if (h < 1) h = RENDER_DEFAULT_HEIGHT;
+
+    const uint8_t *pt = state->level.object_points + (uint32_t)(uint16_t)obj_cid * 8u;
+    int16_t obj_x = obj_w(pt + 0);
+    int16_t obj_z = obj_w(pt + 4);
+    int16_t plr_x = (int16_t)(plr->xoff >> 16);
+    int16_t plr_z = (int16_t)(plr->zoff >> 16);
+    int16_t dx = (int16_t)(obj_x - plr_x);
+    int16_t dz = (int16_t)(obj_z - plr_z);
+
+    int32_t vx = (int32_t)dx * (int32_t)plr->cosval -
+                 (int32_t)dz * (int32_t)plr->sinval;
+    vx <<= 1;
+    int32_t vx_fine = vx >> 9;
+
+    int32_t vz = (int32_t)dx * (int32_t)plr->sinval +
+                 (int32_t)dz * (int32_t)plr->cosval;
+    vz <<= 2;
+    int32_t z_fp = vz >> (16 - ROT_Z_FRAC_BITS);
+    if (z_fp <= ROT_Z_FROM_INT(1)) return false;
+
+    int32_t proj_x_scale = player_current_proj_x_scale(state);
+    int32_t proj_y_scale = player_current_proj_y_scale(state);
+    int center_x = w / 2;
+    int center_y = player_view_center_y_from_look(state, plr, h);
+
+    int screen_x = (int)(((int64_t)vx_fine * (int64_t)proj_x_scale
+                          << ROT_Z_FRAC_BITS) / (int64_t)z_fp) + center_x;
+    int32_t rel_y_8 = target_ydiff >> WORLD_Y_FRAC_BITS;
+    int screen_y = (int)(((int64_t)rel_y_8 * (int64_t)proj_y_scale *
+                          (int64_t)RENDER_SCALE << ROT_Z_FRAC_BITS) /
+                         (int64_t)z_fp) + center_y;
+
+    int width = 40;
+    int half_height = 40;
+    if (obj_type >= 0 && obj_type <= 20) {
+        width = col_box_table[obj_type].width;
+        half_height = col_box_table[obj_type].half_height;
+    }
+
+    int64_t half_w_px64 = ((int64_t)width * 64LL *
+                           (int64_t)proj_x_scale << ROT_Z_FRAC_BITS) /
+                          (int64_t)z_fp;
+    int64_t half_h_px64 = ((int64_t)half_height *
+                           (int64_t)proj_y_scale * (int64_t)RENDER_SCALE
+                           << ROT_Z_FRAC_BITS) / (int64_t)z_fp;
+    int half_w_px = (half_w_px64 > INT_MAX) ? INT_MAX : (int)half_w_px64;
+    int half_h_px = (half_h_px64 > INT_MAX) ? INT_MAX : (int)half_h_px64;
+
+    int assist_x = player_scale_gamepad_aim_region_px(
+        h,
+        GAMEPAD_AIM_ASSIST_REGION_X_BASE_PX,
+        GAMEPAD_AIM_ASSIST_REGION_X_MIN_PX,
+        GAMEPAD_AIM_ASSIST_REGION_X_MAX_PX);
+    int assist_y = player_scale_gamepad_aim_region_px(
+        h,
+        GAMEPAD_AIM_ASSIST_REGION_Y_BASE_PX,
+        GAMEPAD_AIM_ASSIST_REGION_Y_MIN_PX,
+        GAMEPAD_AIM_ASSIST_REGION_Y_MAX_PX);
+
+    int cross_x = w / 2;
+    int cross_y = h / 2;
+    int off_x = screen_x - cross_x;
+    int off_y = screen_y - cross_y;
+    if (off_x < 0) off_x = -off_x;
+    if (off_y < 0) off_y = -off_y;
+
+    return off_x <= half_w_px + assist_x &&
+           off_y <= half_h_px + assist_y;
+}
+
 static bool player_close_rescue_target(const GameState *state,
                                        const PlayerState *plr,
                                        int plr_num,
@@ -3744,13 +3895,20 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
      * along the reticle so they can hit objects and keep the barrel priority
      * from the original target selection. Mouse-look projectiles only enter
      * this scan for the close-rescue case below. */
+    bool gamepad_crosshair_auto_aim =
+        state->cfg_mouse_look && input_gamepad_fire_held();
     bool fixed_view_auto_aim = !state->cfg_mouse_look;
-    bool mouse_look_instant_targeting = state->cfg_mouse_look && gun->fire_bullet != 0;
-    bool mouse_look_projectile_rescue_targeting = state->cfg_mouse_look && gun->fire_bullet == 0;
+    bool mouse_look_instant_targeting =
+        state->cfg_mouse_look && gun->fire_bullet != 0 &&
+        !gamepad_crosshair_auto_aim;
+    bool mouse_look_projectile_rescue_targeting =
+        state->cfg_mouse_look && gun->fire_bullet == 0 &&
+        !gamepad_crosshair_auto_aim;
     bool target_scan_enabled =
         fixed_view_auto_aim ||
         mouse_look_instant_targeting ||
-        mouse_look_projectile_rescue_targeting;
+        mouse_look_projectile_rescue_targeting ||
+        gamepad_crosshair_auto_aim;
     int16_t bulyspd = 0; /* bullet Y velocity for vertical auto-aim */
 
     int8_t *obs_in_line = (plr_num == 1) ? plr1_obs_in_line : plr2_obs_in_line;
@@ -3816,7 +3974,6 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
                                            &rescue_dist,
                                            &rescue_player_dist_sq);
             if (mouse_look_projectile_rescue_targeting && !close_rescue_target) continue;
-            if (!obs_in_line[i] && !close_rescue_target) continue;
             /* For instant weapons, use explicit LOS re-check below instead of
              * enemy can_see bits (which are floor-section strict and can reject
              * valid upper/lower split-zone targets). Close rescue targets are
@@ -3840,10 +3997,27 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
             int16_t obj_y = obj_w(obj->raw + 4);
             int32_t ydiff = ((int32_t)obj_y << 7) - plr->yoff;
             int32_t abs_ydiff = (ydiff < 0) ? -ydiff : ydiff;
+            bool gamepad_crosshair_target = false;
+            if (gamepad_crosshair_auto_aim && !close_rescue_target) {
+                gamepad_crosshair_target =
+                    player_gamepad_target_in_crosshair_region(state, plr,
+                                                              obj_type,
+                                                              obj_cid,
+                                                              ydiff);
+                if (!gamepad_crosshair_target)
+                    continue;
+            } else if (!obs_in_line[i] && !close_rescue_target) {
+                continue;
+            }
+
             if (close_rescue_target) {
                 /* The player is touching a live enemy and looking roughly at it;
                  * bypass vertical reticle/auto-aim gates so short enemies cannot
                  * trap the player under the firing line. */
+            } else if (gamepad_crosshair_target) {
+                /* Controller assist deliberately reuses the AB3D I target aim
+                 * solve below, but only after the target overlaps the fixed
+                 * crosshair region. */
             } else if (mouse_look_instant_targeting) {
                 if (!player_mouse_look_target_in_vertical_aim(state, plr, plr_num,
                                                               obj_type, ydiff, dist))
@@ -3953,12 +4127,16 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
     /* Calculate vertical aim toward target (PlayerShoot.s lines 99-139). */
     {
         bool mouse_look_close_rescue_aim = state->cfg_mouse_look && closest_is_close_rescue;
-        if ((fixed_view_auto_aim || mouse_look_close_rescue_aim) && has_target) {
+        if ((fixed_view_auto_aim ||
+             mouse_look_close_rescue_aim ||
+             gamepad_crosshair_auto_aim) && has_target) {
             int32_t target_ydiff = closest_target_ydiff;
             int32_t aim_dist = closest_dist;
 
-            target_ydiff -= plr->height;
-            target_ydiff += 18 * 256;
+            if (!gamepad_crosshair_auto_aim) {
+                target_ydiff -= plr->height;
+                target_ydiff += 18 * 256;
+            }
 
             int shift = gun->bullet_speed;
             if (shift < 0) shift = 0;
@@ -4009,7 +4187,9 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
                 if (hit) {
                     spawn_instant_hit_effect(state, plr, gun_idx, target,
                                              gun->shot_power, plr_num, closest_dist,
-                                             (int16_t)dir_x, (int16_t)dir_z);
+                                             (int16_t)dir_x, (int16_t)dir_z,
+                                             state->cfg_mouse_look &&
+                                             !gamepad_crosshair_auto_aim);
                 } else if (state->cfg_mouse_look) {
                     spawn_instant_miss_effect_no_target(state, plr, plr_num,
                                                         gun_idx, sin_val, cos_val,
@@ -4023,7 +4203,8 @@ static void player_shoot_internal(GameState *state, PlayerState *plr,
         /* Projectile weapon: Amiga uses PlayerShotData for player projectiles. */
         if (!state->level.player_shot_data) return;
         if (state->cfg_mouse_look) {
-            if (!closest_is_close_rescue)
+            if (!closest_is_close_rescue &&
+                !(gamepad_crosshair_auto_aim && has_target))
                 bulyspd = player_sequel_mouse_aim_bulyspd(state, plr_num, gun->bullet_speed);
         } else if (!has_target) {
             /* PlayerShoot.s nothingtoshoot path zeros bulyspd before PLR1FIREBULLET.

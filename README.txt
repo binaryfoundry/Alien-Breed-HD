@@ -21,7 +21,7 @@ ACTIONS
 GAMEPAD (MODERN FPS LAYOUT)
 - Left Stick: Move
 - Right Stick (X): Turn / look left-right
-- Right Trigger: Fire
+- Right Trigger: Fire; controller aim assist when mouse look is on
 - Left Trigger or A: Operate / Use
 - B (press): Duck toggle
 - Left Bumper / Right Bumper: Previous / next weapon

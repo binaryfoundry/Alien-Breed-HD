@@ -195,6 +195,7 @@ static int16_t g_gamepad_mouse_dx = 0;
 static int16_t g_gamepad_mouse_dy = 0;
 static int8_t g_gamepad_menu_axis_x = 0;
 static int8_t g_gamepad_menu_axis_y = 0;
+static bool g_gamepad_fire_held = false;
 
 static void input_queue_key_press(uint8_t keycode, uint8_t *last_pressed)
 {
@@ -280,6 +281,7 @@ static void input_close_gamepad(void)
     g_gamepad_mouse_dy = 0;
     g_gamepad_menu_axis_x = 0;
     g_gamepad_menu_axis_y = 0;
+    g_gamepad_fire_held = false;
 }
 
 static void input_try_open_gamepad(int device_index)
@@ -344,6 +346,7 @@ static void input_update_gamepad(uint8_t *last_pressed)
 
     g_gamepad_mouse_dx = 0;
     g_gamepad_mouse_dy = 0;
+    g_gamepad_fire_held = false;
     if (!g_gamepad) return;
     menu_active = g_menu_mouse_active;
 
@@ -432,6 +435,7 @@ static void input_update_gamepad(uint8_t *last_pressed)
     if (run_held) input_set_key_state(g_gamepad_keys, AMIGA_KEY_RSHIFT, true);
 
     fire_held = (rt >= PAD_TRIGGER_FIRE_THRESHOLD);
+    g_gamepad_fire_held = fire_held;
     if (fire_held) input_set_key_state(g_gamepad_keys, AMIGA_KEY_RALT, true);
 
     use_held = (lt >= PAD_TRIGGER_USE_THRESHOLD) ||
@@ -572,6 +576,7 @@ void input_init(void)
     g_gamepad_mouse_dy = 0;
     g_gamepad_menu_axis_x = 0;
     g_gamepad_menu_axis_y = 0;
+    g_gamepad_fire_held = false;
     g_quit_requested = false;
     g_f7_spill_visualize_requested = false;
     g_f2_pick_log_requested = false;
@@ -873,6 +878,11 @@ void input_read_joy1(JoyState *out)
 void input_read_joy2(JoyState *out)
 {
     if (out) *out = g_joy2;
+}
+
+bool input_gamepad_fire_held(void)
+{
+    return g_gamepad_fire_held;
 }
 
 bool input_gamepad_duck_toggle_requested(void)
