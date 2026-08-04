@@ -52,17 +52,22 @@
 #define INGAME_MENU_SCREEN_NEW_GAME 1
 #define INGAME_MENU_SCREEN_AUTOSAVES 2
 #define INGAME_MENU_SCREEN_LOAD_AUTOSAVE 3
+#define INGAME_MENU_SCREEN_OPTIONS  4
 
 #define INGAME_MENU_CONTINUE    0
 #define INGAME_MENU_NEW_GAME    1
 #define INGAME_MENU_AUTOSAVES   2
-#define INGAME_MENU_MOUSE_LOOK  3
-#define INGAME_MENU_FPS_COUNTER 4
-#define INGAME_MENU_VOLUME      5
-#define INGAME_MENU_EXIT        6
-#define INGAME_MENU_COUNT       7
+#define INGAME_MENU_OPTIONS     3
+#define INGAME_MENU_EXIT        4
+#define INGAME_MENU_COUNT       5
 
 #define INGAME_MENU_AUTOSAVE_BACK PLAYER_AUTOSAVE_SLOT_COUNT
+
+#define INGAME_OPTIONS_MENU_MOUSE_LOOK  0
+#define INGAME_OPTIONS_MENU_FPS_COUNTER 1
+#define INGAME_OPTIONS_MENU_VOLUME      2
+#define INGAME_OPTIONS_MENU_BACK        3
+#define INGAME_OPTIONS_MENU_COUNT       4
 
 #define INGAME_MENU_CONFIRM_YES   0
 #define INGAME_MENU_CONFIRM_NO    1
@@ -482,15 +487,54 @@ static int game_loop_main_menu_item_at_line(const GameLoopCtx *ctx, int line)
     }
     row++;
 
-    if (line == row) return INGAME_MENU_MOUSE_LOOK;
+    if (line == row) return INGAME_MENU_OPTIONS;
     row++;
-    if (line == row) return INGAME_MENU_FPS_COUNTER;
-    row++;
-    if (line == row) return INGAME_MENU_VOLUME;
-    row++;
+
     if (game_loop_main_menu_item_visible(ctx, INGAME_MENU_EXIT) &&
         line == row)
         return INGAME_MENU_EXIT;
+    return -1;
+}
+
+static int game_loop_options_menu_item_enabled(int item)
+{
+    return item >= 0 && item < INGAME_OPTIONS_MENU_COUNT;
+}
+
+static void game_loop_set_options_menu_selection(GameLoopCtx *ctx, int preferred)
+{
+    if (!ctx) return;
+    if (game_loop_options_menu_item_enabled(preferred)) {
+        ctx->ingame_menu_selected = preferred;
+        return;
+    }
+    ctx->ingame_menu_selected = INGAME_OPTIONS_MENU_MOUSE_LOOK;
+}
+
+static int game_loop_move_options_menu_selection(GameLoopCtx *ctx, int step)
+{
+    int selected;
+    if (!ctx || step == 0) return 0;
+    selected = ctx->ingame_menu_selected;
+    for (int i = 0; i < INGAME_OPTIONS_MENU_COUNT; i++) {
+        selected = (selected + step + INGAME_OPTIONS_MENU_COUNT) %
+                   INGAME_OPTIONS_MENU_COUNT;
+        if (game_loop_options_menu_item_enabled(selected)) {
+            if (ctx->ingame_menu_selected == selected)
+                return 0;
+            ctx->ingame_menu_selected = selected;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int game_loop_options_menu_item_at_line(int line)
+{
+    if (line == 2) return INGAME_OPTIONS_MENU_MOUSE_LOOK;
+    if (line == 3) return INGAME_OPTIONS_MENU_FPS_COUNTER;
+    if (line == 4) return INGAME_OPTIONS_MENU_VOLUME;
+    if (line == 6) return INGAME_OPTIONS_MENU_BACK;
     return -1;
 }
 
@@ -500,6 +544,9 @@ static int game_loop_menu_item_at_line(const GameLoopCtx *ctx, int line)
 
     if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_MAIN)
         return game_loop_main_menu_item_at_line(ctx, line);
+
+    if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_OPTIONS)
+        return game_loop_options_menu_item_at_line(line);
 
     if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_AUTOSAVES) {
         if (line >= 2 && line < 2 + PLAYER_AUTOSAVE_SLOT_COUNT) {
@@ -526,6 +573,8 @@ static int game_loop_move_menu_selection(GameLoopCtx *ctx, int step)
     old_selected = ctx->ingame_menu_selected;
     if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_MAIN) {
         return game_loop_move_main_menu_selection(ctx, step);
+    } else if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_OPTIONS) {
+        return game_loop_move_options_menu_selection(ctx, step);
     } else if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_AUTOSAVES) {
         return game_loop_move_autosave_menu_selection(ctx, step);
     } else {
@@ -698,6 +747,34 @@ static void game_loop_draw_ingame_menu(GameState *state, const GameLoopCtx *ctx)
         return;
     }
 
+    if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_OPTIONS) {
+        display_draw_line_of_text("OPTIONS", 1);
+
+        snprintf(line, sizeof(line), "%c MOUSE LOOK   : %s",
+                 (ctx->ingame_menu_selected == INGAME_OPTIONS_MENU_MOUSE_LOOK) ?
+                 '>' : ' ',
+                 (state && state->cfg_mouse_look) ? "ON" : "OFF");
+        display_draw_line_of_text(line, 2);
+
+        snprintf(line, sizeof(line), "%c FPS COUNTER  : %s",
+                 (ctx->ingame_menu_selected == INGAME_OPTIONS_MENU_FPS_COUNTER) ?
+                 '>' : ' ',
+                 (state && state->cfg_show_fps) ? "ON" : "OFF");
+        display_draw_line_of_text(line, 3);
+
+        snprintf(line, sizeof(line), "%c VOLUME       : %3d%%",
+                 (ctx->ingame_menu_selected == INGAME_OPTIONS_MENU_VOLUME) ?
+                 '>' : ' ',
+                 state ? (int)state->cfg_volume : 100);
+        display_draw_line_of_text(line, 4);
+
+        display_draw_line_of_text(
+            (ctx->ingame_menu_selected == INGAME_OPTIONS_MENU_BACK) ?
+            "> BACK" : "  BACK", 6);
+        game_loop_present_menu(state, ctx);
+        return;
+    }
+
     int row = 2;
 
     if (game_loop_main_menu_item_visible(ctx, INGAME_MENU_CONTINUE)) {
@@ -721,22 +798,8 @@ static void game_loop_draw_ingame_menu(GameState *state, const GameLoopCtx *ctx)
     }
     row++;
 
-    snprintf(line, sizeof(line), "%c MOUSE LOOK   : %s",
-             (ctx->ingame_menu_selected == INGAME_MENU_MOUSE_LOOK) ? '>' : ' ',
-             (state && state->cfg_mouse_look) ? "ON" : "OFF");
-    display_draw_line_of_text(line, row);
-    row++;
-
-    snprintf(line, sizeof(line), "%c FPS COUNTER  : %s",
-             (ctx->ingame_menu_selected == INGAME_MENU_FPS_COUNTER) ? '>' : ' ',
-             (state && state->cfg_show_fps) ? "ON" : "OFF");
-    display_draw_line_of_text(line, row);
-    row++;
-
-    snprintf(line, sizeof(line), "%c VOLUME       : %3d%%",
-             (ctx->ingame_menu_selected == INGAME_MENU_VOLUME) ? '>' : ' ',
-             state ? (int)state->cfg_volume : 100);
-    display_draw_line_of_text(line, row);
+    display_draw_line_of_text((ctx->ingame_menu_selected == INGAME_MENU_OPTIONS) ?
+                              "> OPTIONS" : "  OPTIONS", row);
     row++;
 
     if (game_loop_main_menu_item_visible(ctx, INGAME_MENU_EXIT)) {
@@ -752,6 +815,16 @@ static void game_loop_return_to_ingame_main_menu(GameState *state, GameLoopCtx *
     ctx->ingame_menu_screen = INGAME_MENU_SCREEN_MAIN;
     game_loop_refresh_autosave_info(ctx);
     game_loop_set_main_menu_selection(ctx, preferred);
+    input_clear_keyboard(state->key_map);
+    game_loop_pause_timing(state, ctx);
+    game_loop_draw_ingame_menu(state, ctx);
+}
+
+static void game_loop_return_to_options_menu(GameState *state, GameLoopCtx *ctx,
+                                             int preferred)
+{
+    ctx->ingame_menu_screen = INGAME_MENU_SCREEN_OPTIONS;
+    game_loop_set_options_menu_selection(ctx, preferred);
     input_clear_keyboard(state->key_map);
     game_loop_pause_timing(state, ctx);
     game_loop_draw_ingame_menu(state, ctx);
@@ -872,11 +945,51 @@ static void game_loop_select_confirm_item(GameState *state, GameLoopCtx *ctx)
     }
 }
 
+static void game_loop_select_options_menu_item(GameState *state, GameLoopCtx *ctx)
+{
+    switch (ctx->ingame_menu_selected) {
+    case INGAME_OPTIONS_MENU_MOUSE_LOOK:
+        state->cfg_mouse_look = !state->cfg_mouse_look;
+        if (!state->cfg_mouse_look) {
+            player_clear_mouse_look_aim_state(state);
+        }
+        settings_save_menu_options(state);
+        break;
+
+    case INGAME_OPTIONS_MENU_FPS_COUNTER:
+        state->cfg_show_fps = !state->cfg_show_fps;
+        settings_save_menu_options(state);
+        break;
+
+    case INGAME_OPTIONS_MENU_VOLUME:
+        {
+            int volume = (int)state->cfg_volume + INGAME_MENU_VOLUME_STEP;
+            state->cfg_volume = (int16_t)((volume > 100) ? 0 : volume);
+        }
+        game_loop_apply_volume(state);
+        break;
+
+    case INGAME_OPTIONS_MENU_BACK:
+        game_loop_return_to_ingame_main_menu(state, ctx, INGAME_MENU_OPTIONS);
+        return;
+
+    default:
+        break;
+    }
+
+    game_loop_pause_timing(state, ctx);
+    game_loop_draw_ingame_menu(state, ctx);
+}
+
 static void game_loop_select_ingame_menu_item(GameState *state, GameLoopCtx *ctx)
 {
     if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_NEW_GAME ||
         ctx->ingame_menu_screen == INGAME_MENU_SCREEN_LOAD_AUTOSAVE) {
         game_loop_select_confirm_item(state, ctx);
+        return;
+    }
+    if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_OPTIONS) {
+        game_loop_select_options_menu_item(state, ctx);
         return;
     }
     if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_AUTOSAVES) {
@@ -922,26 +1035,10 @@ static void game_loop_select_ingame_menu_item(GameState *state, GameLoopCtx *ctx
         ctx->ingame_menu_selected = INGAME_MENU_CONFIRM_NO;
         break;
 
-    case INGAME_MENU_MOUSE_LOOK:
-        state->cfg_mouse_look = !state->cfg_mouse_look;
-        if (!state->cfg_mouse_look) {
-            player_clear_mouse_look_aim_state(state);
-        }
-        settings_save_menu_options(state);
-        break;
-
-    case INGAME_MENU_FPS_COUNTER:
-        state->cfg_show_fps = !state->cfg_show_fps;
-        settings_save_menu_options(state);
-        break;
-
-    case INGAME_MENU_VOLUME:
-        {
-            int volume = (int)state->cfg_volume + INGAME_MENU_VOLUME_STEP;
-            state->cfg_volume = (int16_t)((volume > 100) ? 0 : volume);
-        }
-        game_loop_apply_volume(state);
-        break;
+    case INGAME_MENU_OPTIONS:
+        game_loop_return_to_options_menu(state, ctx,
+                                         INGAME_OPTIONS_MENU_MOUSE_LOOK);
+        return;
 
     case INGAME_MENU_EXIT:
         input_set_menu_mouse_active(false, state->key_map);
@@ -1019,6 +1116,9 @@ static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
         } else if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_AUTOSAVES) {
             game_loop_return_to_ingame_main_menu(state, ctx,
                                                 INGAME_MENU_AUTOSAVES);
+        } else if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_OPTIONS) {
+            game_loop_return_to_ingame_main_menu(state, ctx,
+                                                INGAME_MENU_OPTIONS);
         } else if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_NEW_GAME) {
             game_loop_return_to_ingame_main_menu(state, ctx,
                                                 INGAME_MENU_NEW_GAME);
@@ -1041,6 +1141,9 @@ static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
         } else if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_AUTOSAVES) {
             game_loop_return_to_ingame_main_menu(state, ctx,
                                                 INGAME_MENU_AUTOSAVES);
+        } else if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_OPTIONS) {
+            game_loop_return_to_ingame_main_menu(state, ctx,
+                                                INGAME_MENU_OPTIONS);
         } else if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_NEW_GAME) {
             game_loop_return_to_ingame_main_menu(state, ctx,
                                                 INGAME_MENU_NEW_GAME);
@@ -1068,8 +1171,8 @@ static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
 
     bool menu_left = input_consume_key_press(KEY_LEFT);
     bool menu_right = input_consume_key_press(KEY_RIGHT);
-    if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_MAIN &&
-        ctx->ingame_menu_selected == INGAME_MENU_VOLUME &&
+    if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_OPTIONS &&
+        ctx->ingame_menu_selected == INGAME_OPTIONS_MENU_VOLUME &&
         (menu_left || menu_right)) {
         int delta = 0;
         if (menu_left) delta -= INGAME_MENU_VOLUME_STEP;
