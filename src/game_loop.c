@@ -63,11 +63,14 @@
 
 #define INGAME_MENU_AUTOSAVE_BACK PLAYER_AUTOSAVE_SLOT_COUNT
 
-#define INGAME_OPTIONS_MENU_MOUSE_LOOK  0
-#define INGAME_OPTIONS_MENU_FPS_COUNTER 1
-#define INGAME_OPTIONS_MENU_VOLUME      2
-#define INGAME_OPTIONS_MENU_BACK        3
-#define INGAME_OPTIONS_MENU_COUNT       4
+#define INGAME_OPTIONS_MENU_MOUSE_LOOK   0
+#define INGAME_OPTIONS_MENU_CROSSHAIR    1
+#define INGAME_OPTIONS_MENU_GAMEPAD_TURN 2
+#define INGAME_OPTIONS_MENU_RUN_DEFAULT  3
+#define INGAME_OPTIONS_MENU_FPS_COUNTER  4
+#define INGAME_OPTIONS_MENU_VOLUME       5
+#define INGAME_OPTIONS_MENU_BACK         6
+#define INGAME_OPTIONS_MENU_COUNT        7
 
 #define INGAME_MENU_CONFIRM_YES   0
 #define INGAME_MENU_CONFIRM_NO    1
@@ -85,6 +88,9 @@
 #define INGAME_MENU_SFX_ACCEPT 11
 #define INGAME_MENU_SFX_VOLUME 50
 #define INGAME_MENU_VOLUME_STEP 10
+#define INGAME_MENU_GAMEPAD_TURN_STEP 25
+#define INGAME_MENU_GAMEPAD_TURN_MIN 25
+#define INGAME_MENU_GAMEPAD_TURN_MAX 800
 
 /* Maximum frame count before clamping */
 #define MAX_TEMP_FRAMES 15
@@ -532,9 +538,12 @@ static int game_loop_move_options_menu_selection(GameLoopCtx *ctx, int step)
 static int game_loop_options_menu_item_at_line(int line)
 {
     if (line == 2) return INGAME_OPTIONS_MENU_MOUSE_LOOK;
-    if (line == 3) return INGAME_OPTIONS_MENU_FPS_COUNTER;
-    if (line == 4) return INGAME_OPTIONS_MENU_VOLUME;
-    if (line == 6) return INGAME_OPTIONS_MENU_BACK;
+    if (line == 3) return INGAME_OPTIONS_MENU_CROSSHAIR;
+    if (line == 4) return INGAME_OPTIONS_MENU_GAMEPAD_TURN;
+    if (line == 5) return INGAME_OPTIONS_MENU_RUN_DEFAULT;
+    if (line == 6) return INGAME_OPTIONS_MENU_FPS_COUNTER;
+    if (line == 7) return INGAME_OPTIONS_MENU_VOLUME;
+    if (line == 8) return INGAME_OPTIONS_MENU_BACK;
     return -1;
 }
 
@@ -675,6 +684,65 @@ static void game_loop_adjust_volume(GameState *state,
     game_loop_draw_ingame_menu(state, ctx);
 }
 
+static const char *game_loop_crosshair_label(uint8_t colour)
+{
+    switch (colour & 7u) {
+    case 1:  return "GREEN";
+    case 2:  return "MID GREEN";
+    case 3:  return "YELLOW";
+    case 4:  return "GREY";
+    case 5:  return "RED";
+    case 6:  return "ICE BLUE";
+    case 7:  return "BLUE";
+    case 0:
+    default: return "OFF";
+    }
+}
+
+static void game_loop_adjust_crosshair(GameState *state,
+                                       GameLoopCtx *ctx,
+                                       int delta)
+{
+    int colour;
+    if (!state || !ctx || delta == 0) return;
+    colour = (int)(state->cfg_crosshair_colour & 7u) + delta;
+    while (colour < 0) colour += 8;
+    while (colour > 7) colour -= 8;
+    if (colour == (int)(state->cfg_crosshair_colour & 7u)) return;
+    state->cfg_crosshair_colour = (uint8_t)colour;
+    settings_save_menu_options(state);
+    game_loop_play_menu_accept_sound(state);
+    game_loop_pause_timing(state, ctx);
+    game_loop_draw_ingame_menu(state, ctx);
+}
+
+static void game_loop_adjust_gamepad_turn_speed(GameState *state,
+                                                GameLoopCtx *ctx,
+                                                int delta,
+                                                int wrap)
+{
+    int speed;
+    if (!state || !ctx || delta == 0) return;
+    speed = (int)state->cfg_gamepad_look_speed + delta;
+    if (wrap) {
+        if (speed > INGAME_MENU_GAMEPAD_TURN_MAX)
+            speed = INGAME_MENU_GAMEPAD_TURN_MIN;
+        else if (speed < INGAME_MENU_GAMEPAD_TURN_MIN)
+            speed = INGAME_MENU_GAMEPAD_TURN_MAX;
+    } else {
+        if (speed < INGAME_MENU_GAMEPAD_TURN_MIN)
+            speed = INGAME_MENU_GAMEPAD_TURN_MIN;
+        if (speed > INGAME_MENU_GAMEPAD_TURN_MAX)
+            speed = INGAME_MENU_GAMEPAD_TURN_MAX;
+    }
+    if (speed == (int)state->cfg_gamepad_look_speed) return;
+    state->cfg_gamepad_look_speed = (int16_t)speed;
+    settings_save_menu_options(state);
+    game_loop_play_menu_accept_sound(state);
+    game_loop_pause_timing(state, ctx);
+    game_loop_draw_ingame_menu(state, ctx);
+}
+
 static void game_loop_present_menu(GameState *state, const GameLoopCtx *ctx)
 {
     if (ctx && ctx->ingame_menu_frontend) {
@@ -756,21 +824,40 @@ static void game_loop_draw_ingame_menu(GameState *state, const GameLoopCtx *ctx)
                  (state && state->cfg_mouse_look) ? "ON" : "OFF");
         display_draw_line_of_text(line, 2);
 
+        snprintf(line, sizeof(line), "%c CROSSHAIR    : %s",
+                 (ctx->ingame_menu_selected == INGAME_OPTIONS_MENU_CROSSHAIR) ?
+                 '>' : ' ',
+                 state ? game_loop_crosshair_label(state->cfg_crosshair_colour) :
+                 "OFF");
+        display_draw_line_of_text(line, 3);
+
+        snprintf(line, sizeof(line), "%c GAMEPAD TURN : %3d%%",
+                 (ctx->ingame_menu_selected == INGAME_OPTIONS_MENU_GAMEPAD_TURN) ?
+                 '>' : ' ',
+                 state ? (int)state->cfg_gamepad_look_speed : 100);
+        display_draw_line_of_text(line, 4);
+
+        snprintf(line, sizeof(line), "%c RUN DEFAULT  : %s",
+                 (ctx->ingame_menu_selected == INGAME_OPTIONS_MENU_RUN_DEFAULT) ?
+                 '>' : ' ',
+                 (state && state->cfg_run_default) ? "ON" : "OFF");
+        display_draw_line_of_text(line, 5);
+
         snprintf(line, sizeof(line), "%c FPS COUNTER  : %s",
                  (ctx->ingame_menu_selected == INGAME_OPTIONS_MENU_FPS_COUNTER) ?
                  '>' : ' ',
                  (state && state->cfg_show_fps) ? "ON" : "OFF");
-        display_draw_line_of_text(line, 3);
+        display_draw_line_of_text(line, 6);
 
         snprintf(line, sizeof(line), "%c VOLUME       : %3d%%",
                  (ctx->ingame_menu_selected == INGAME_OPTIONS_MENU_VOLUME) ?
                  '>' : ' ',
                  state ? (int)state->cfg_volume : 100);
-        display_draw_line_of_text(line, 4);
+        display_draw_line_of_text(line, 7);
 
         display_draw_line_of_text(
             (ctx->ingame_menu_selected == INGAME_OPTIONS_MENU_BACK) ?
-            "> BACK" : "  BACK", 6);
+            "> BACK" : "  BACK", 8);
         game_loop_present_menu(state, ctx);
         return;
     }
@@ -953,6 +1040,28 @@ static void game_loop_select_options_menu_item(GameState *state, GameLoopCtx *ct
         if (!state->cfg_mouse_look) {
             player_clear_mouse_look_aim_state(state);
         }
+        settings_save_menu_options(state);
+        break;
+
+    case INGAME_OPTIONS_MENU_CROSSHAIR:
+        state->cfg_crosshair_colour =
+            (uint8_t)(((int)(state->cfg_crosshair_colour & 7u) + 1) & 7);
+        settings_save_menu_options(state);
+        break;
+
+    case INGAME_OPTIONS_MENU_GAMEPAD_TURN:
+        {
+            int speed = (int)state->cfg_gamepad_look_speed +
+                        INGAME_MENU_GAMEPAD_TURN_STEP;
+            if (speed > INGAME_MENU_GAMEPAD_TURN_MAX)
+                speed = INGAME_MENU_GAMEPAD_TURN_MIN;
+            state->cfg_gamepad_look_speed = (int16_t)speed;
+        }
+        settings_save_menu_options(state);
+        break;
+
+    case INGAME_OPTIONS_MENU_RUN_DEFAULT:
+        state->cfg_run_default = !state->cfg_run_default;
         settings_save_menu_options(state);
         break;
 
@@ -1172,15 +1281,38 @@ static int game_loop_update_ingame_menu(GameState *state, GameLoopCtx *ctx)
     bool menu_left = input_consume_key_press(KEY_LEFT);
     bool menu_right = input_consume_key_press(KEY_RIGHT);
     if (ctx->ingame_menu_screen == INGAME_MENU_SCREEN_OPTIONS &&
-        ctx->ingame_menu_selected == INGAME_OPTIONS_MENU_VOLUME &&
         (menu_left || menu_right)) {
         int delta = 0;
-        if (menu_left) delta -= INGAME_MENU_VOLUME_STEP;
-        if (menu_right) delta += INGAME_MENU_VOLUME_STEP;
-        if (delta != 0)
-            game_loop_adjust_volume(state, ctx, delta);
+        switch (ctx->ingame_menu_selected) {
+        case INGAME_OPTIONS_MENU_CROSSHAIR:
+            if (menu_left) delta -= 1;
+            if (menu_right) delta += 1;
+            if (delta != 0)
+                game_loop_adjust_crosshair(state, ctx, delta);
+            game_loop_clear_queued_actions();
+            return 1;
+
+        case INGAME_OPTIONS_MENU_GAMEPAD_TURN:
+            if (menu_left) delta -= INGAME_MENU_GAMEPAD_TURN_STEP;
+            if (menu_right) delta += INGAME_MENU_GAMEPAD_TURN_STEP;
+            if (delta != 0)
+                game_loop_adjust_gamepad_turn_speed(state, ctx, delta, 0);
+            game_loop_clear_queued_actions();
+            return 1;
+
+        case INGAME_OPTIONS_MENU_VOLUME:
+            if (menu_left) delta -= INGAME_MENU_VOLUME_STEP;
+            if (menu_right) delta += INGAME_MENU_VOLUME_STEP;
+            if (delta != 0)
+                game_loop_adjust_volume(state, ctx, delta);
+            game_loop_clear_queued_actions();
+            return 1;
+
+        default:
+            break;
+        }
+
         game_loop_clear_queued_actions();
-        return 1;
     }
 
     if (game_loop_update_ingame_menu_mouse(state, ctx))

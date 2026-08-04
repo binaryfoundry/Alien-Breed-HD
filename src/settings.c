@@ -26,9 +26,12 @@ static void log_effective_settings(const GameState *state,
                                    const char *source_label);
 
 #if defined(__EMSCRIPTEN__)
-#define SETTINGS_WEB_MOUSE_LOOK_KEY "ab3d1.settings.mouse_look"
-#define SETTINGS_WEB_SHOW_FPS_KEY   "ab3d1.settings.show_fps"
-#define SETTINGS_WEB_VOLUME_KEY     "ab3d1.settings.volume"
+#define SETTINGS_WEB_MOUSE_LOOK_KEY          "ab3d1.settings.mouse_look"
+#define SETTINGS_WEB_SHOW_FPS_KEY            "ab3d1.settings.show_fps"
+#define SETTINGS_WEB_VOLUME_KEY              "ab3d1.settings.volume"
+#define SETTINGS_WEB_CROSSHAIR_KEY           "ab3d1.settings.crosshair"
+#define SETTINGS_WEB_GAMEPAD_LOOK_SPEED_KEY  "ab3d1.settings.gamepad_look_speed"
+#define SETTINGS_WEB_RUN_DEFAULT_KEY         "ab3d1.settings.run_default"
 
 EM_JS(int, settings_web_local_storage_get_int,
       (const char *key_ptr, int default_value), {
@@ -180,7 +183,10 @@ static int settings_write_menu_options_line(FILE *out,
                                             const GameState *state,
                                             int *saw_mouse_look,
                                             int *saw_show_fps,
-                                            int *saw_volume)
+                                            int *saw_volume,
+                                            int *saw_crosshair,
+                                            int *saw_gamepad_look_speed,
+                                            int *saw_run_default)
 {
     char key[64];
 
@@ -204,6 +210,27 @@ static int settings_write_menu_options_line(FILE *out,
         return fprintf(out, "volume=%d\n",
                        (int)state->cfg_volume) >= 0;
     }
+    if (strcmp(key, "crosshair") == 0 ||
+        strcmp(key, "crosshair_colour") == 0 ||
+        strcmp(key, "crosshair_color") == 0 ||
+        strcmp(key, "misc.crosshair_colour") == 0) {
+        *saw_crosshair = 1;
+        return fprintf(out, "%s=%d\n", key,
+                       (int)(state->cfg_crosshair_colour & 7u)) >= 0;
+    }
+    if (strcmp(key, "gamepad_look_speed") == 0 ||
+        strcmp(key, "gamepad_turn_speed") == 0 ||
+        strcmp(key, "pad_turn_speed") == 0) {
+        *saw_gamepad_look_speed = 1;
+        return fprintf(out, "%s=%d\n", key,
+                       (int)state->cfg_gamepad_look_speed) >= 0;
+    }
+    if (strcmp(key, "run_default") == 0 ||
+        strcmp(key, "always_run") == 0) {
+        *saw_run_default = 1;
+        return fprintf(out, "%s=%d\n", key,
+                       state->cfg_run_default ? 1 : 0) >= 0;
+    }
 
     return fputs(line, out) >= 0;
 }
@@ -212,9 +239,15 @@ static int settings_append_missing_menu_options(FILE *out,
                                                 const GameState *state,
                                                 int saw_mouse_look,
                                                 int saw_show_fps,
-                                                int saw_volume)
+                                                int saw_volume,
+                                                int saw_crosshair,
+                                                int saw_gamepad_look_speed,
+                                                int saw_run_default)
 {
-    if (saw_mouse_look && saw_show_fps && saw_volume) return 1;
+    if (saw_mouse_look && saw_show_fps && saw_volume &&
+        saw_crosshair && saw_gamepad_look_speed && saw_run_default) {
+        return 1;
+    }
     if (fprintf(out, "\n# Runtime menu options\n") < 0) return 0;
     if (!saw_mouse_look &&
         fprintf(out, "mouse_look=%d\n", state->cfg_mouse_look ? 1 : 0) < 0) {
@@ -226,6 +259,21 @@ static int settings_append_missing_menu_options(FILE *out,
     }
     if (!saw_volume &&
         fprintf(out, "volume=%d\n", (int)state->cfg_volume) < 0) {
+        return 0;
+    }
+    if (!saw_crosshair &&
+        fprintf(out, "crosshair=%d\n",
+                (int)(state->cfg_crosshair_colour & 7u)) < 0) {
+        return 0;
+    }
+    if (!saw_gamepad_look_speed &&
+        fprintf(out, "gamepad_look_speed=%d\n",
+                (int)state->cfg_gamepad_look_speed) < 0) {
+        return 0;
+    }
+    if (!saw_run_default &&
+        fprintf(out, "run_default=%d\n",
+                state->cfg_run_default ? 1 : 0) < 0) {
         return 0;
     }
     return 1;
@@ -242,6 +290,9 @@ static void settings_save_menu_options_to_ini(const GameState *state)
     int saw_mouse_look = 0;
     int saw_show_fps = 0;
     int saw_volume = 0;
+    int saw_crosshair = 0;
+    int saw_gamepad_look_speed = 0;
+    int saw_run_default = 0;
     int ok = 1;
 
     if (!state) return;
@@ -287,7 +338,10 @@ static void settings_save_menu_options_to_ini(const GameState *state)
             if (!settings_write_menu_options_line(out, line, state,
                                                   &saw_mouse_look,
                                                   &saw_show_fps,
-                                                  &saw_volume)) {
+                                                  &saw_volume,
+                                                  &saw_crosshair,
+                                                  &saw_gamepad_look_speed,
+                                                  &saw_run_default)) {
                 ok = 0;
                 break;
             }
@@ -300,7 +354,10 @@ static void settings_save_menu_options_to_ini(const GameState *state)
         ok = settings_append_missing_menu_options(out, state,
                                                   saw_mouse_look,
                                                   saw_show_fps,
-                                                  saw_volume);
+                                                  saw_volume,
+                                                  saw_crosshair,
+                                                  saw_gamepad_look_speed,
+                                                  saw_run_default);
     }
     if (fclose(out) != 0) ok = 0;
 
@@ -343,6 +400,26 @@ static void settings_apply_persistent_menu_options(GameState *state)
             state->cfg_volume = (int16_t)volume;
         }
     }
+    {
+        int crosshair = settings_web_local_storage_get_int(
+            SETTINGS_WEB_CROSSHAIR_KEY,
+            (int)(state->cfg_crosshair_colour & 7u));
+        if (crosshair >= 0 && crosshair <= 7) {
+            state->cfg_crosshair_colour = (uint8_t)crosshair;
+        }
+    }
+    {
+        int speed = settings_web_local_storage_get_int(
+            SETTINGS_WEB_GAMEPAD_LOOK_SPEED_KEY,
+            (int)state->cfg_gamepad_look_speed);
+        if (speed >= 25 && speed <= 800) {
+            state->cfg_gamepad_look_speed = (int16_t)speed;
+        }
+    }
+    state->cfg_run_default =
+        settings_web_local_storage_get_int(
+            SETTINGS_WEB_RUN_DEFAULT_KEY,
+            state->cfg_run_default ? 1 : 0) != 0;
 #else
     (void)state;
 #endif
@@ -562,6 +639,11 @@ static void apply_runtime_constraints(GameState *state)
         state->cfg_volume = 0;
     else if (state->cfg_volume > 100)
         state->cfg_volume = 100;
+    if (state->cfg_gamepad_look_speed < 25)
+        state->cfg_gamepad_look_speed = 25;
+    else if (state->cfg_gamepad_look_speed > 800)
+        state->cfg_gamepad_look_speed = 800;
+    state->cfg_crosshair_colour &= 7u;
 }
 
 static void log_effective_settings(const GameState *state, const char *source_label)
@@ -721,7 +803,16 @@ void settings_save_menu_options(const GameState *state)
             state->cfg_show_fps ? 1 : 0) ||
         !settings_web_local_storage_set_int(
             SETTINGS_WEB_VOLUME_KEY,
-            (int)state->cfg_volume)) {
+            (int)state->cfg_volume) ||
+        !settings_web_local_storage_set_int(
+            SETTINGS_WEB_CROSSHAIR_KEY,
+            (int)(state->cfg_crosshair_colour & 7u)) ||
+        !settings_web_local_storage_set_int(
+            SETTINGS_WEB_GAMEPAD_LOOK_SPEED_KEY,
+            (int)state->cfg_gamepad_look_speed) ||
+        !settings_web_local_storage_set_int(
+            SETTINGS_WEB_RUN_DEFAULT_KEY,
+            state->cfg_run_default ? 1 : 0)) {
         printf("[SETTINGS] menu options localStorage save failed\n");
     }
 #else

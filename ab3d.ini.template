@@ -46,12 +46,14 @@ mouse_look=1
 # 1 = invert mouse-look Y when mouse_look=1.
 mouse_look_invert_y=0
 
+# Options menu: Gamepad Turn.
 # Gamepad right-stick turn/look speed.
 # 100 = previous speed, 200 = twice as fast.
 # Allowed range: 25..800.
 # Aliases: gamepad_turn_speed, pad_turn_speed.
 gamepad_look_speed=300
 
+# Options menu: Run Default.
 # 1 = run by default; hold Shift to walk.
 # 0 = original-style walk by default; hold Shift to run.
 run_default=1
@@ -61,6 +63,7 @@ run_default=1
 # Alias: water_footsteps_only.
 footsteps_water_only=0
 
+# Options menu: Crosshair.
 # TKG-style crosshair colour.
 # 0 = off, 1 = intense green, 2 = mid green, 3 = intense yellow, 4 = bright grey,
 # 5 = intense red, 6 = ice blue, 7 = intense blue.
