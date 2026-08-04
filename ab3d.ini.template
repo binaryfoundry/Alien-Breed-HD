@@ -50,7 +50,7 @@ mouse_look_invert_y=0
 # 100 = previous speed, 200 = twice as fast.
 # Allowed range: 25..800.
 # Aliases: gamepad_turn_speed, pad_turn_speed.
-gamepad_look_speed=200
+gamepad_look_speed=300
 
 # 1 = run by default; hold Shift to walk.
 # 0 = original-style walk by default; hold Shift to run.
