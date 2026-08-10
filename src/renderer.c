@@ -9136,6 +9136,9 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
     const size_t rw_stride = (size_t)rw;
     const size_t cw_step_y = renderer_cw_step_y(rw);
     const int down_strip_i = (int)down_strip;
+    /* Pitch-adjusted projection center; must match the center used when
+     * clip_top_sy/clip_bot_sy were projected (renderer_project_zone_world_clip_y). */
+    const int view_center_y_px = renderer_view_center_y();
     const int spill_visualize = (is_spill && g_debug_spill_visualize) ? 1 : 0;
     const uint16_t spill_vis_cw = 0x0F0Fu;
     const uint32_t spill_vis_rgb = amiga12_to_argb(spill_vis_cw);
@@ -9333,6 +9336,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
         } else {
             const ColumnClip *cc = &g_renderer.clip;
             int occ_top[2], occ_bot[2], occ_count = 0;
+            int32_t occ_min_z = 0;
 
             if (cc->z && cc->top && cc->bot &&
                 screen_col >= 0 && screen_col < rw) {
@@ -9341,6 +9345,7 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                     cc->z[screen_col] < (int32_t)z) {
                     occ_top[occ_count] = cc->top[screen_col];
                     occ_bot[occ_count] = cc->bot[screen_col];
+                    occ_min_z = cc->z[screen_col];
                     occ_count++;
                 }
                 if (cc->z2 && cc->top2 && cc->bot2 &&
@@ -9349,6 +9354,8 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                     cc->z2[screen_col] < (int32_t)z) {
                     occ_top[occ_count] = cc->top2[screen_col];
                     occ_bot[occ_count] = cc->bot2[screen_col];
+                    if (occ_min_z <= 0 || cc->z2[screen_col] < occ_min_z)
+                        occ_min_z = cc->z2[screen_col];
                     occ_count++;
                 }
             }
@@ -9358,6 +9365,12 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
                 seg_bot[0] = draw_bot;
                 seg_count = 1;
             } else {
+                /* Column-local bottom bound: draw_bot itself is invariant across
+                 * the column loop; a per-column clamp must not leak into later
+                 * columns (that made spill clipping depend on draw column order
+                 * and worker slice boundaries). */
+                int col_draw_bot = draw_bot;
+
                 if (occ_count == 2 && occ_top[0] > occ_top[1]) {
                     int tt = occ_top[0]; occ_top[0] = occ_top[1]; occ_top[1] = tt;
                     int tb = occ_bot[0]; occ_bot[0] = occ_bot[1]; occ_bot[1] = tb;
@@ -9371,30 +9384,38 @@ static void renderer_draw_sprite_ctx(RenderSliceContext *ctx,
 
                 /* For spill sprites the floor clip is projected at sprite Z, but
                  * the step-face wall separating the zones is at a shorter column Z.
-                 * Re-project clip_bot_sy at the actual column wall Z so the sprite
-                 * cannot extend below the floor as seen from the step face. */
-                if (have_plane_clip && cc->z && screen_col >= 0 && screen_col < rw) {
-                    int32_t col_wz = cc->z[screen_col];
-                    if (col_wz > 0 && col_wz < (int32_t)z) {
-                        int center_y_v = rh / 2;
-                        int32_t C = (int32_t)clip_bot_sy - center_y_v;
-                        int floor_sy = center_y_v + (int)(((int64_t)C * (int32_t)z) / col_wz);
-                        if (floor_sy < draw_bot) draw_bot = floor_sy;
-                    }
+                 * Re-project clip_bot_sy at the nearest occluding wall Z (around
+                 * the pitch-adjusted view center used for the original projection)
+                 * so the sprite cannot extend below the floor as seen from the
+                 * step face. */
+                if (have_plane_clip && occ_min_z > 0) {
+                    int32_t C = (int32_t)clip_bot_sy - view_center_y_px;
+                    int floor_sy = view_center_y_px +
+                        (int)(((int64_t)C * (int32_t)z) / occ_min_z);
+                    if (floor_sy < col_draw_bot) col_draw_bot = floor_sy;
                 }
 
+                /* Visible intervals = [draw_top, col_draw_bot] minus occluder
+                 * spans. Segment bounds must stay clamped to col_draw_bot: an
+                 * occluder whose top starts below the sprite bottom (step face
+                 * under the sprite's feet) must not extend the draw past it —
+                 * rows below draw_bot index past the filled row LUT and smear
+                 * stale texture at the wrong scale. */
                 for (int oi = 0; oi < occ_count; oi++) {
+                    if (cur > col_draw_bot) break;
                     if (cur < occ_top[oi] && seg_count < 3) {
+                        int sb = occ_top[oi] - 1;
+                        if (sb > col_draw_bot) sb = col_draw_bot;
                         seg_top[seg_count] = cur;
-                        seg_bot[seg_count] = occ_top[oi] - 1;
+                        seg_bot[seg_count] = sb;
                         seg_count++;
                     }
                     if (occ_bot[oi] >= cur)
                         cur = occ_bot[oi] + 1;
                 }
-                if (cur <= draw_bot && seg_count < 3) {
+                if (cur <= col_draw_bot && seg_count < 3) {
                     seg_top[seg_count] = cur;
-                    seg_bot[seg_count] = draw_bot;
+                    seg_bot[seg_count] = col_draw_bot;
                     seg_count++;
                 }
             }
@@ -10286,6 +10307,18 @@ static inline int renderer_project_billboard_wall_y_size(const RendererState *r,
     if (projected < 1) projected = 1;
     if (projected > INT_MAX) projected = INT_MAX;
     return (int)projected;
+}
+
+/* renderer_draw_sprite_ctx takes int16 position/size. Saturate instead of
+ * letting the call-site casts wrap: a wrapped height/screen-y breaks sprite
+ * scaling and placement for very close billboards at high internal
+ * resolutions. Must be applied before spill clip narrowing so the geometric
+ * column mask and the final draw agree on the projected rect. */
+static inline int16_t renderer_sprite_param_i16(int v)
+{
+    if (v < INT16_MIN) return INT16_MIN;
+    if (v > INT16_MAX) return INT16_MAX;
+    return (int16_t)v;
 }
 
 static int renderer_world_span_overlaps_room(int32_t center_world_y,
@@ -12545,6 +12578,10 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             int32_t expl_world_w = expl_w * EXPLOSION_SIZE_CORRECTION;
             const int entry_is_spill = (entry->source_zone != zone_id) ? 1 : 0;
             if (expl_world_w < 1) expl_world_w = 1;
+            scr_x = renderer_sprite_param_i16(scr_x);
+            scr_y = renderer_sprite_param_i16(scr_y);
+            sprite_w = renderer_sprite_param_i16(sprite_w);
+            sprite_h = renderer_sprite_param_i16(sprite_h);
             if (entry_is_spill) {
                 if (!renderer_spill_draw_still_valid(state,
                                                      entry->source_zone,
@@ -12799,6 +12836,10 @@ static void draw_zone_objects_ctx(RenderSliceContext *ctx, GameState *state, int
             const int entry_is_spill = (entry->source_zone != zone_id) ? 1 : 0;
 
             if (orp_z_int > 32767) orp_z_int = 32767;
+            scr_x = renderer_sprite_param_i16(scr_x);
+            scr_y = renderer_sprite_param_i16(scr_y);
+            sprite_w = renderer_sprite_param_i16(sprite_w);
+            sprite_h = renderer_sprite_param_i16(sprite_h);
 
             if (level->object_points && pt_num >= 0 && pt_num < num_pts) {
                 const uint8_t *pt_ptr = level->object_points + (size_t)(uint16_t)pt_num * 8u;
